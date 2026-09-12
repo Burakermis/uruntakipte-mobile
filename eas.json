@@ -1,0 +1,34 @@
+{
+  "cli": {
+    "version": ">= 13.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://localhost:4000/api"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "REPLACE_WITH_STAGING_API_URL",
+        "EXPO_PUBLIC_REVENUECAT_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_KEY",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_KEY"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_URL": "REPLACE_WITH_PRODUCTION_API_URL",
+        "EXPO_PUBLIC_REVENUECAT_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_KEY",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_KEY"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

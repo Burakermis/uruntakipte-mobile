@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "ÜrünTakipte",
+    "slug": "uruntakipte",
+    "version": "1.0.0",
+    "description": "Zara, H&M, Bershka, Mango, Pull&Bear, Massimo Dutti, Stradivarius ve Oysho'da beğendiğin ürünlerin fiyat düşüşünü ve stok durumunu takip et, fırsatı kaçırma.",
+    "primaryColor": "#005c55",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.uruntakipte.app"
+    },
+    "android": {
+      "package": "com.uruntakipte.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
+      }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#f7faf8",
+          "dark": {
+            "backgroundColor": "#101413"
+          }
+        }
+      ],
+      "expo-font"
+    ]
+  }
+}
