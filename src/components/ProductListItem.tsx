@@ -65,7 +65,10 @@ export function ProductListItem({ group, onPress, onDeleteAll, loading }: Produc
           {group.items.map((item) => (
             <View key={item.id} style={styles.sizeBadge}>
               <View style={[styles.sizeDot, { backgroundColor: stock[item.lastAvailability].color }]} />
-              <Text style={styles.sizeBadgeText}>{showColor ? `${item.color} ${item.size}` : item.size}</Text>
+              {/* "middle": uzun renk adı ortadan kısalır, sondaki beden görünür kalır */}
+              <Text style={styles.sizeBadgeText} numberOfLines={1} ellipsizeMode="middle">
+                {showColor ? `${item.color} ${item.size}` : item.size}
+              </Text>
             </View>
           ))}
         </View>

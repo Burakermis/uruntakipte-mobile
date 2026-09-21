@@ -66,10 +66,14 @@ export const makeStyles = (colors: ColorTokens) =>
       color: colors.onSurface,
       minHeight: 34,
     },
+    // Dar ızgara kartında (2 sütun, ~117dp) 6 haneli fiyat + "N beden" yan yana
+    // sığmıyor — ikincisi alt satıra sarılır, taşmaz.
     bottomRow: {
       flexDirection: 'row',
+      flexWrap: 'wrap',
       alignItems: 'center',
       justifyContent: 'space-between',
+      columnGap: 6,
       marginTop: 2,
     },
     price: {

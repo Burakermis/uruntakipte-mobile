@@ -38,6 +38,21 @@ export async function registerForPushNotificationsAsync(): Promise<PushRegistrat
     };
   }
 
+  if (Platform.OS === 'android') {
+    // Android 13+: en az bir bildirim kanalı oluşturulmadan sistem izin penceresi HİÇ
+    // görünmüyor (bkz. Expo notifications dokümanı) — yani kullanıcı izin veremiyor, bildirim
+    // gelmiyor. Kanal izin/token isteğinden ÖNCE oluşturulmalı; Expo push'un varsayılan
+    // kanal kimliği "default".
+    try {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'Fiyat ve stok bildirimleri',
+        importance: Notifications.AndroidImportance.HIGH,
+      });
+    } catch {
+      // Kanal oluşturulamadıysa da izin/token akışı denenir.
+    }
+  }
+
   const { status: existingStatus } = await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
   if (existingStatus !== 'granted') {

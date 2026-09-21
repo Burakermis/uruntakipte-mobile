@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Image, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ApiRequestError, createTrackedProduct, listTrackedProducts } from '../api';
+import { listTrackedProducts } from '../api';
 import { AVAILABILITY_LABEL, canNotifyOnBackInStock } from '../availability';
 import { AddProductUrlScreen } from './AddProductUrlScreen';
 import { Card } from '../components/Card';
@@ -15,6 +15,8 @@ import { ToggleRow } from '../components/ToggleRow';
 import { useTheme } from '../theme/ThemeProvider';
 import { withAlpha } from '../utils/color';
 import { formatPrice } from '../utils/format';
+import { explainFailure } from '../utils/errors';
+import { addTrackedProduct } from '../utils/trackedProducts';
 import type { ResolvedProduct, SizeOption } from '../types';
 import { makeStyles } from './ProductVariantScreen.styles';
 
@@ -107,7 +109,7 @@ export function ProductVariantScreen({ userId, onClose, onTracked }: ProductVari
     setSubmitError(null);
 
     const succeeded: SizeOption[] = [];
-    const failed: { sizeOption: SizeOption; message: string }[] = [];
+    const failed: { sizeOption: SizeOption; error: unknown }[] = [];
 
     // Sırayla (Promise.all DEĞİL) — findOrCreateTarget'ta ilk-kez-görülen bir
     // URL için eşzamanlı istekleri birleştiren bir kilit yok. Sıralı gönderim,
@@ -116,9 +118,16 @@ export function ProductVariantScreen({ userId, onClose, onTracked }: ProductVari
     // (bkz. backend/routes/products.js findOrCreateTarget). Bildirim
     // tercihleri artık gönderilmiyor — backend bunları stok durumundan
     // türetip zorunlu kılıyor (bkz. routes/products.js).
+    //
+    // Aynı ürünün bir bedeninin "eklenemedi" olması tek bir anlık aksaklıktan
+    // (ağ, geçici 5xx, hız sınırı) kaynaklanabiliyor — bu yüzden geçici hatalar
+    // kullanıcıya yansımadan sessizce yeniden deneniyor (bkz. utils/retry.ts).
+    // Ekleme tekrarlanabilir: backend zaten takipteki bedene `alreadyTracked`
+    // döndürüyor, yani yanıtı kaybolan ama sunucuda tamamlanan bir istek çift
+    // kayıt oluşturmaz.
     for (const sizeOption of selectedSizeObjects) {
       try {
-        const result = await createTrackedProduct({
+        const result = await addTrackedProduct({
           userId,
           url: product.canonicalUrl,
           sku: sizeOption.sku,
@@ -128,10 +137,7 @@ export function ProductVariantScreen({ userId, onClose, onTracked }: ProductVari
           setTrackedSkus((prev) => new Set(prev).add(sizeOption.sku));
         }
       } catch (e) {
-        failed.push({
-          sizeOption,
-          message: e instanceof ApiRequestError ? e.message : 'Bilinmeyen hata',
-        });
+        failed.push({ sizeOption, error: e });
       }
     }
 
@@ -151,10 +157,16 @@ export function ProductVariantScreen({ userId, onClose, onTracked }: ProductVari
       return next;
     });
     setSelectedSkus(new Set(failed.map((f) => f.sizeOption.sku)));
+
+    // Yeniden denemelere rağmen eklenemediyse nedeni söylüyoruz: kesin ret (limit doldu…)
+    // → sunucunun gerekçesi; bağlantı yoksa "Bağlantı kurulamadı…"; sunucu geçici olarak
+    // yanıt vermiyorsa "sonra tekrar deneyin" (bkz. utils/errors.ts explainFailure).
+    const sizes = failed.map((f) => f.sizeOption.size).join(', ');
+    const reason = explainFailure(failed.map((f) => f.error));
     setSubmitError(
       succeeded.length > 0
-        ? `${succeeded.length} beden eklendi. Eklenemeyenler: ${failed.map((f) => f.sizeOption.size).join(', ')}.`
-        : `Hiçbir beden eklenemedi: ${failed.map((f) => f.sizeOption.size).join(', ')}.`
+        ? `${succeeded.length} beden eklendi. Eklenemeyenler: ${sizes}. ${reason}`
+        : `Hiçbir beden eklenemedi: ${sizes}. ${reason}`
     );
   }
 
@@ -182,7 +194,9 @@ export function ProductVariantScreen({ userId, onClose, onTracked }: ProductVari
               <Text style={styles.productName} numberOfLines={2}>
                 {product.name}
               </Text>
-              <Text style={styles.productPrice}>
+              {/* 32dp'lik fiyat, görselin yanındaki dar sütunda (280dp ekranda ~104dp)
+                  sığmayınca harf harf bölünüyordu — tek satırda kalıp küçülür. */}
+              <Text style={styles.productPrice} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>
                 {formatPrice(priceReference?.price ?? null, priceReference?.currency ?? null)}
               </Text>
 

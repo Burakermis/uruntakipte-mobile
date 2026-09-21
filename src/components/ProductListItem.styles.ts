@@ -43,18 +43,26 @@ export const makeStyles = (colors: ColorTokens) =>
       letterSpacing: 0.4,
       color: colors.primary,
     },
+    // Ad + fiyat yan yana durur; ikisi sığmayacak kadar dar bir kartta (ör. 280dp
+    // katlanır telefon ya da 5-6 haneli fiyat) fiyat adın ALTINA sarılır. Eskiden
+    // ad `flex: 1` (taban genişlik 0) idi: fiyat sabit genişlikte kalıp adı 10-20dp'ye
+    // sıkıştırıyor, ad harf harf alt alta iniyordu.
     topRow: {
       flexDirection: 'row',
-      justifyContent: 'space-between',
+      flexWrap: 'wrap',
       alignItems: 'flex-start',
-      gap: 16,
+      columnGap: 12,
+      rowGap: 2,
     },
     name: {
-      flex: 1,
+      flexGrow: 1,
+      flexShrink: 1,
+      flexBasis: 96,
       fontSize: 14,
       color: colors.onSurface,
     },
     price: {
+      marginLeft: 'auto',
       fontSize: 16,
       fontWeight: '600',
       color: colors.onSurface,
@@ -67,6 +75,9 @@ export const makeStyles = (colors: ColorTokens) =>
     sizeBadge: {
       flexDirection: 'row',
       alignItems: 'center',
+      // Uzun renk adı ("Ekru / Mavi Çizgili Desenli…") rozeti kart genişliğinden
+      // taşırmasın — metin rozetin içinde kısalır (bkz. sizeBadgeText).
+      maxWidth: '100%',
       gap: 5,
       paddingHorizontal: 8,
       paddingVertical: 4,
@@ -81,6 +92,7 @@ export const makeStyles = (colors: ColorTokens) =>
       borderRadius: 3,
     },
     sizeBadgeText: {
+      flexShrink: 1,
       fontSize: 11,
       fontWeight: '600',
       color: colors.onSurfaceVariant,

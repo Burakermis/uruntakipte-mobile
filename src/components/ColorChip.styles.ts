@@ -12,6 +12,9 @@ export const makeStyles = (colors: ColorTokens) =>
       paddingHorizontal: 12,
       paddingVertical: 4,
       borderRadius: radii.full,
+      // Sarmalı satırda tek bir çip satırdan geniş olamaz (dar sütunda uzun renk adı
+      // ekrandan taşıyordu) — metin çipin içinde iki satıra kadar kısalır.
+      maxWidth: '100%',
       marginRight: 8,
       marginBottom: 8,
     },
@@ -28,6 +31,7 @@ export const makeStyles = (colors: ColorTokens) =>
       opacity: 0.5,
     },
     label: {
+      flexShrink: 1,
       fontSize: 13,
       fontWeight: '600',
       color: colors.onSurfaceVariant,

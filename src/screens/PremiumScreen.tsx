@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import type { PurchasesPackage } from 'react-native-purchases';
-import { ApiRequestError, setPremium, syncPremiumStatus } from '../api';
+import { setPremium, syncPremiumStatus } from '../api';
 import { BottomTabBar } from '../components/BottomTabBar';
 import { Card } from '../components/Card';
 import { Header } from '../components/Header';
@@ -17,6 +17,7 @@ import {
   restorePurchases,
 } from '../purchases';
 import type { PremiumPackages } from '../purchases';
+import { describeError, describePurchaseError } from '../utils/errors';
 import { useTheme } from '../theme/ThemeProvider';
 import type { ColorTokens } from '../theme';
 import { makeStyles } from './PremiumScreen.styles';
@@ -155,8 +156,8 @@ export function PremiumScreen({ userId, onClose, onOpenProducts, onOpenSettings 
       setPackages(pkgs);
       setSelectedTier(pkgs.monthly ? 'monthly' : pkgs.weekly ? 'weekly' : 'annual');
       setStep('plans');
-    } catch {
-      showAlert('Hata', 'Planlar yüklenemedi, tekrar dene.');
+    } catch (e) {
+      showAlert('Planlar yüklenemedi', describePurchaseError(e, 'Planlar şu an yüklenemiyor. Lütfen daha sonra tekrar dene.'));
     } finally {
       setLoadingPlans(false);
     }
@@ -169,7 +170,7 @@ export function PremiumScreen({ userId, onClose, onOpenProducts, onOpenSettings 
       showAlert('Premium aktif', 'Artık sınırsız ürün takip edebilir, 1 dakikada bir kontrol alabilirsin.');
       onClose();
     } catch (e) {
-      showAlert('Hata', e instanceof ApiRequestError ? e.message : 'Premium aktifleştirilemedi, tekrar dene.');
+      showAlert('Premium aktifleştirilemedi', describeError(e, 'Premium aktifleştirilemedi. Lütfen daha sonra tekrar dene.'));
     } finally {
       setActivating(false);
     }
@@ -199,7 +200,7 @@ export function PremiumScreen({ userId, onClose, onOpenProducts, onOpenSettings 
       showAlert('Premium aktif', 'Artık sınırsız ürün takip edebilir, 1 dakikada bir kontrol alabilirsin.');
       onClose();
     } catch (e) {
-      showAlert('Hata', e instanceof ApiRequestError ? e.message : 'Abonelik tamamlanamadı, tekrar dene.');
+      showAlert('Abonelik tamamlanamadı', describeError(e, 'Abonelik tamamlanamadı. Lütfen daha sonra tekrar dene.'));
     } finally {
       setActivating(false);
     }
@@ -227,8 +228,8 @@ export function PremiumScreen({ userId, onClose, onOpenProducts, onOpenSettings 
       }
       showAlert('Geri yüklendi', 'Premium aboneliğin bu cihaza yeniden bağlandı.');
       onClose();
-    } catch {
-      showAlert('Hata', 'Satın alımlar geri yüklenemedi, tekrar dene.');
+    } catch (e) {
+      showAlert('Satın alımlar geri yüklenemedi', describeError(e, 'Satın alımlar geri yüklenemedi. Lütfen daha sonra tekrar dene.'));
     } finally {
       setRestoring(false);
     }

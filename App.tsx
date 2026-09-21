@@ -7,6 +7,7 @@ import { DialogHost } from './src/dialog/DialogHost';
 import { registerForPushNotificationsAsync } from './src/notifications';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
 import { getOrCreateDeviceId } from './src/utils/deviceId';
+import { retryTransient } from './src/utils/retry';
 import { configurePurchases } from './src/purchases';
 import { PremiumScreen } from './src/screens/PremiumScreen';
 import { ProductVariantScreen } from './src/screens/ProductVariantScreen';
@@ -61,9 +62,11 @@ function AppContent() {
       const result = await registerForPushNotificationsAsync();
       if (result.status === 'granted') {
         try {
-          await registerDevice(deviceId, result.token, Platform.OS);
+          // Anlık ağ aksaklığında sessizce yeniden denenir; yine olmazsa bir sonraki açılışta
+          // ya da Ayarlar > Bildirim Ayarları'ndan (orada nedeni de gösterilir) tekrar denenir.
+          await retryTransient(() => registerDevice(deviceId, result.token, Platform.OS));
         } catch {
-          // Sessizce yut — kullanıcı Profil ekranından manuel tekrar deneyebilir.
+          // Açılışta kullanıcıyı bir uyarıyla kesmiyoruz.
         }
       }
     })();

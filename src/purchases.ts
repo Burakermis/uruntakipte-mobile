@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import Purchases, { type CustomerInfo, type PurchasesPackage } from 'react-native-purchases';
+import { describePurchaseError } from './utils/errors';
 
 // RevenueCat web'de çalışmıyor (StoreKit/Play Billing native API'lerinin
 // üzerine kurulu) ve API key henüz tanımlı değilse (RevenueCat hesabı
@@ -70,7 +71,9 @@ export async function purchasePackage(pkg: PurchasesPackage): Promise<PurchaseRe
     return { success: hasActiveEntitlement(customerInfo) };
   } catch (e: any) {
     if (e?.userCancelled) return { success: false, cancelled: true };
-    return { success: false, message: e?.message ?? 'Satın alma başarısız oldu.' };
+    // Mağaza/RevenueCat hataları İngilizce ve teknik — kod bilinen bir nedene karşılık
+    // geliyorsa (bağlantı yok, mağazaya ulaşılamıyor, zaten abonesin…) Türkçe açıklaması gösterilir.
+    return { success: false, message: describePurchaseError(e, 'Satın alma tamamlanamadı. Lütfen daha sonra tekrar dene.') };
   }
 }
 
@@ -86,6 +89,6 @@ export async function restorePurchases(): Promise<PurchaseResult> {
     const customerInfo = await Purchases.restorePurchases();
     return { success: hasActiveEntitlement(customerInfo) };
   } catch (e: any) {
-    return { success: false, message: e?.message ?? 'Satın alımlar geri yüklenemedi.' };
+    return { success: false, message: describePurchaseError(e, 'Satın alımlar geri yüklenemedi. Lütfen daha sonra tekrar dene.') };
   }
 }

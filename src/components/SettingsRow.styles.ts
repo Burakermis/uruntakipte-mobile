@@ -13,8 +13,15 @@ export const makeStyles = (colors: ColorTokens) =>
       ...makeRowShellStyles(colors).row,
       paddingHorizontal: 16,
     },
+    // flexShrink: RN'de varsayılan 0 — bu sarmalayıcı küçülmezse uzun durum metni
+    // (ör. 36 haneli Cihaz ID, "Kapalı — cihaz ayarlarından aç") ikonun yanında
+    // kalan alana değil, satırın tamamına göre ölçülüp chevron'un üstüne taşıyordu.
+    textWrap: {
+      flexShrink: 1,
+    },
     labelRow: {
       flexDirection: 'row',
+      flexWrap: 'wrap',
       alignItems: 'center',
       gap: 8,
     },

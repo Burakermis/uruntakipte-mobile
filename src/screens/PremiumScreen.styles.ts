@@ -205,12 +205,16 @@ export const makeStyles = (colors: ColorTokens) =>
       color: colors.onSurface,
     },
     planBadge: {
+      // Dar ekranda ("3 gün ücretsiz deneme!") rozet plan kartındaki gövde
+      // genişliğini aşabiliyordu — metin rozetin içinde kısalır.
+      maxWidth: '100%',
       paddingHorizontal: 8,
       paddingVertical: 3,
       borderRadius: radii.full,
       backgroundColor: colors.primaryContainer,
     },
     planBadgeText: {
+      flexShrink: 1,
       fontSize: 10,
       fontWeight: '700',
       letterSpacing: 0.3,

@@ -1,13 +1,15 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import * as Clipboard from 'expo-clipboard';
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
-import { ApiRequestError, resolveProduct } from '../api';
+import { resolveProduct } from '../api';
 import { Card } from '../components/Card';
 import { Icon } from '../components/Icon';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { useTheme } from '../theme/ThemeProvider';
 import { SUPPORTED_BRANDS } from '../utils/brands';
+import { describeError } from '../utils/errors';
+import { retryTransient } from '../utils/retry';
 import { extractUrlFromPastedText } from '../utils/url';
 import type { ResolvedProduct } from '../types';
 import { makeStyles } from './AddProductUrlScreen.styles';
@@ -27,21 +29,28 @@ export function AddProductUrlScreen({ onClose, onResolved }: AddProductUrlScreen
   const [url, setUrl] = useState('');
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
+  // Klavyedeki "Git" tuşuna art arda basmak (düğme pasifken bile) aynı sayfa için birden çok
+  // pahalı tarama başlatıyordu — state güncellemesini beklemeyen bir bayrakla tekilleştiriliyor.
+  const inFlight = useRef(false);
 
   async function handleResolve(targetUrl: string) {
     // Kullanıcı native "yapıştır" ile (üstteki yapıştır butonunu değil,
     // TextInput'un kendi paste'ini) kullanıp önündeki ürün adını
     // temizlemeden "Ürün Getir"e basmış olabilir — burada da temizliyoruz.
     const trimmed = extractUrlFromPastedText(targetUrl);
-    if (!trimmed) return;
+    if (!trimmed || inFlight.current) return;
+    inFlight.current = true;
     setResolving(true);
     setResolveError(null);
     try {
-      const resolved = await resolveProduct(trimmed);
+      // Anlık bir ağ/sunucu aksaklığı kullanıcıya yansımadan yeniden denenir (bkz. utils/retry.ts).
+      const resolved = await retryTransient(() => resolveProduct(trimmed));
       onResolved(resolved);
     } catch (e) {
-      setResolveError(e instanceof ApiRequestError ? e.message : 'Bağlantı hatası. Backend çalışıyor mu?');
+      // Neden başarısız olduğu söylenir: "Bağlantı kurulamadı…", desteklenmeyen site, sayfa okunamadı…
+      setResolveError(describeError(e));
     } finally {
+      inFlight.current = false;
       setResolving(false);
     }
   }

@@ -25,11 +25,29 @@ export const API_BASE_URL =
 
 class ApiRequestError extends Error {
   code: string;
+  // HTTP durum kodu — istemcinin "geçici hata mı, kesin ret mi" ayrımı için
+  // (bkz. utils/retry.ts). Durumu bilinmeyen yerlerde 0.
+  status: number;
   cooldownRemainingMs?: number;
-  constructor(payload: ApiError) {
+  constructor(payload: ApiError, status = 0) {
     super(payload.message);
     this.code = payload.error;
+    this.status = status;
     this.cooldownRemainingMs = payload.cooldownRemainingMs;
+  }
+}
+
+// Sunucuya HİÇ ulaşılamadı (internet yok, adres erişilemez) ya da yanıt süresinde
+// gelmedi. Mesaj doğrudan kullanıcıya gösterilebilir — geliştirici diliyle
+// ("Backend çalışıyor mu?", API adresi) değil, ne yapması gerektiğiyle.
+export const CONNECTION_MESSAGE = 'Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.';
+export const TIMEOUT_MESSAGE = 'Bağlantı zaman aşımına uğradı. İnternet bağlantını kontrol edip tekrar dene.';
+
+class ConnectionError extends Error {
+  kind: 'offline' | 'timeout';
+  constructor(kind: 'offline' | 'timeout') {
+    super(kind === 'timeout' ? TIMEOUT_MESSAGE : CONNECTION_MESSAGE);
+    this.kind = kind;
   }
 }
 
@@ -59,19 +77,30 @@ async function request<T>(path: string, options: RequestInit = {}, timeoutMs = R
       signal: controller.signal,
     });
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error(`İstek zaman aşımına uğradı (${API_BASE_URL}). Backend çalışıyor mu, doğru adrese mi bağlanıyorsun?`);
-    }
-    throw err;
+    // fetch yalnızca ağ düzeyinde başarısızlıkta (ya da iptalde) fırlatır.
+    throw new ConnectionError(err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'offline');
   } finally {
     clearTimeout(timer);
   }
   if (res.status === 204) {
     return undefined as T;
   }
-  const data = await res.json();
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    // Gövde JSON değil — tipik olarak ters proxy/yük dengeleyicinin HTML 502/503
+    // sayfası. Ham SyntaxError yerine geçici bir sunucu hatası olarak bildirilir.
+    throw new ApiRequestError(
+      {
+        error: 'BAD_RESPONSE',
+        message: 'Sunucu şu an yanıt veremiyor. Lütfen daha sonra tekrar deneyin.',
+      },
+      res.ok ? 502 : res.status
+    );
+  }
   if (!res.ok) {
-    throw new ApiRequestError(data as ApiError);
+    throw new ApiRequestError(data as ApiError, res.status);
   }
   return data as T;
 }
@@ -160,4 +189,4 @@ export function syncPremiumStatus(userId: string): Promise<{ userId: string; isP
   return postJson(`/users/${encodeURIComponent(userId)}/sync-premium`, {});
 }
 
-export { ApiRequestError };
+export { ApiRequestError, ConnectionError };

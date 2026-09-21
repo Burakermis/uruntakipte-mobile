@@ -86,11 +86,38 @@ export const makeStyles = (colors: ColorTokens) =>
       fontSize: 14,
       color: colors.onSurfaceVariant,
     },
+    trackedHint: {
+      fontSize: 12,
+      color: colors.onSurfaceVariant,
+    },
+    loadErrorBox: {
+      alignItems: 'center',
+      gap: 4,
+      marginTop: 12,
+      paddingHorizontal: 8,
+    },
+    loadErrorTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.onSurface,
+      textAlign: 'center',
+    },
     loadErrorText: {
       fontSize: 13,
       color: colors.onSurfaceVariant,
       textAlign: 'center',
-      marginTop: 8,
+    },
+    loadErrorRetry: {
+      minHeight: 44,
+      paddingHorizontal: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    loadErrorRetryText: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.primary,
+      textDecorationLine: 'underline',
     },
     chipRow: {
       flexDirection: 'row',

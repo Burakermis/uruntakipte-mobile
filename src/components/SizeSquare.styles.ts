@@ -14,6 +14,7 @@ export const makeStyles = (colors: ColorTokens) =>
   StyleSheet.create({
     square: {
       minWidth: MIN_SIZE,
+      maxWidth: '100%',
       height: MIN_SIZE,
       paddingHorizontal: 10,
       borderRadius: radii.sm,
@@ -35,6 +36,7 @@ export const makeStyles = (colors: ColorTokens) =>
       opacity: 0.5,
     },
     label: {
+      flexShrink: 1,
       fontSize: 13,
       fontWeight: '700',
       color: colors.onSurfaceVariant,

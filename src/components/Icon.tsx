@@ -49,6 +49,8 @@ const SYMBOL_TO_MATERIAL_ICON: Record<string, React.ComponentProps<typeof Materi
   all_inclusive: 'all-inclusive',
   radio_unchecked: 'radiobox-blank',
   radio_checked: 'radiobox-marked',
+  // Bağlantı hatası uyarısı (bkz. ProductsScreen).
+  wifi_off: 'wifi-off',
 };
 
 interface IconProps {

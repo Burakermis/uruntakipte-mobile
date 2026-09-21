@@ -10,14 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import {
-  ApiRequestError,
-  checkTrackedProductNow,
-  deleteTrackedProduct,
-  getUserLimits,
-  listTrackedProducts,
-  resolveProduct,
-} from '../api';
+import { checkTrackedProductNow, getUserLimits, listTrackedProducts, resolveProduct } from '../api';
 import { BottomTabBar } from '../components/BottomTabBar';
 import { Card } from '../components/Card';
 import { Header } from '../components/Header';
@@ -31,7 +24,9 @@ import { showAlert } from '../dialog/dialogStore';
 import { useTheme } from '../theme/ThemeProvider';
 import { getBrandLabel, SUPPORTED_BRANDS } from '../utils/brands';
 import { confirmAsync } from '../utils/confirm';
+import { describeError, explainFailure } from '../utils/errors';
 import { formatCountdown, formatDuration } from '../utils/format';
+import { removeTrackedProduct } from '../utils/trackedProducts';
 import type { ResolvedProduct, TrackedProduct, TrackedProductGroup, UserLimits } from '../types';
 import { ProductDetailScreen } from './ProductDetailScreen';
 import { makeStyles } from './ProductsScreen.styles';
@@ -50,6 +45,10 @@ type ViewMode = 'list' | 'grid';
 // genişliği bu boşluk düşülerek hesaplanıyor (bkz. onGridLayout).
 const GRID_GAP = 12;
 const GRID_COLUMNS = 2;
+
+// Bağlantı hatası uyarısı görünürken veri, bu aralıkla arka planda yeniden çekilir —
+// bağlantı gelince uyarı kullanıcı bir şey yapmadan kaybolur.
+const AUTO_RETRY_MS = 10_000;
 
 const ADD_PRODUCT_STEPS = [
   `${SUPPORTED_BRANDS.join(', ')} uygulamasını açın`,
@@ -98,11 +97,23 @@ export function ProductsScreen({
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [gridWidth, setGridWidth] = useState(0);
-  const [detailGroup, setDetailGroup] = useState<TrackedProductGroup | null>(null);
+  // Detay ekranı, ürünün sabit bilgilerini (ad, görsel, marka) açılıştaki karttan alır; beden
+  // listesi ise HER ZAMAN güncel listeden türetilir — kaydetme kısmen başarısız olup liste
+  // yenilendiğinde ekran gerçek durumu gösterir, geride kalan (başarısız) işlemler taslakta kalır.
+  const [detailBase, setDetailBase] = useState<Omit<TrackedProductGroup, 'items'> | null>(null);
   const [detailResolved, setDetailResolved] = useState<ResolvedProduct | null>(null);
   const [detailLoadError, setDetailLoadError] = useState<string | null>(null);
   const [openingUrl, setOpeningUrl] = useState<string | null>(null);
+  // Son veri çekme (liste VEYA limitler) başarısızsa true — başarılı bir çekimle
+  // ikisi de gelene kadar "Bağlantı kurulamadı" uyarısı gösterilir.
+  const [loadError, setLoadError] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryTick, setRetryTick] = useState(0);
   const groups = useMemo(() => groupTrackedProducts(items), [items]);
+  const detailGroup = useMemo<TrackedProductGroup | null>(() => {
+    if (!detailBase) return null;
+    return groups.find((g) => g.canonicalUrl === detailBase.canonicalUrl) ?? { ...detailBase, items: [] };
+  }, [detailBase, groups]);
 
   // '%' genişlik + `gap` kombinasyonu flexbox'ta yuvarlama yüzünden dar
   // ekranlarda taşabiliyor — bunun yerine konteynerin GERÇEK genişliği
@@ -129,14 +140,15 @@ export function ProductsScreen({
     setQuery('');
   }
 
+  // Liste ve limit istekleri birbirinden bağımsız; başarısız olan kısım son bilinen
+  // değerini korur. Eskiden `Promise.all` + `catch { setItems([]) }` idi: yenileme
+  // sırasındaki tek bir ağ hatası (ya da yalnızca limit isteğinin düşmesi) ekrandaki
+  // listeyi silip "Henüz ürün eklemediniz" gösteriyordu.
   const fetchList = useCallback(async () => {
-    try {
-      const [data, userLimits] = await Promise.all([listTrackedProducts(userId), getUserLimits(userId)]);
-      setItems(data);
-      setLimits(userLimits);
-    } catch {
-      setItems([]);
-    }
+    const [list, userLimits] = await Promise.allSettled([listTrackedProducts(userId), getUserLimits(userId)]);
+    if (list.status === 'fulfilled') setItems(list.value);
+    if (userLimits.status === 'fulfilled') setLimits(userLimits.value);
+    setLoadError(list.status === 'rejected' || userLimits.status === 'rejected');
   }, [userId]);
 
   useEffect(() => {
@@ -149,6 +161,25 @@ export function ProductsScreen({
       cancelled = true;
     };
   }, [fetchList, refreshToken]);
+
+  // Uyarı görünürken veriyi arka planda yeniden dener (her deneme bitince bir sonrakini
+  // zamanlar — istekler üst üste binmez). Başarılı olunca loadError false olur, döngü durur.
+  useEffect(() => {
+    if (!loadError) return;
+    const timer = setTimeout(() => {
+      fetchList().finally(() => setRetryTick((t) => t + 1));
+    }, AUTO_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [loadError, retryTick, fetchList]);
+
+  async function handleRetry() {
+    setRetrying(true);
+    try {
+      await fetchList();
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   useEffect(() => {
     setCooldownMs(limits?.cooldownRemainingMs ?? 0);
@@ -169,7 +200,9 @@ export function ProductsScreen({
   async function handleRefresh() {
     setRefreshing(true);
     try {
-      await Promise.allSettled(items.map((item) => checkTrackedProductNow(item.id, userId)));
+      // Kontrol HEDEF (ürün sayfası) bazında çalışıyor ve tüm bedenleri günceller — bir ürünün
+      // N bedeni için N kez aynı sayfayı taratmak yerine ürün başına tek istek yeterli.
+      await Promise.allSettled(groups.map((group) => checkTrackedProductNow(group.items[0].id, userId)));
       await fetchList();
     } finally {
       setRefreshing(false);
@@ -189,12 +222,29 @@ export function ProductsScreen({
     const ids = new Set(group.items.map((i) => i.id));
     const previous = items;
     setItems((cur) => cur.filter((i) => !ids.has(i.id))); // iyimser güncelleme
-    try {
-      await Promise.all(group.items.map((i) => deleteTrackedProduct(i.id, userId)));
+
+    // Her beden ayrı istek: biri başarısız olsa da diğerleri silinir; hangisinin gittiği
+    // bilinir. Geçici hatalar sessizce yeniden denenir, "zaten silinmiş" (404) başarı sayılır.
+    const results = await Promise.allSettled(group.items.map((i) => removeTrackedProduct(i.id, userId)));
+    const failures = results.flatMap((r, index) => (r.status === 'rejected' ? [{ item: group.items[index], error: r.reason }] : []));
+
+    if (failures.length === 0) {
       getUserLimits(userId).then(setLimits).catch(() => {});
-    } catch {
-      setItems(previous); // başarısızsa geri al
-      showAlert('Hata', 'Silinemedi, tekrar dene.');
+      return;
+    }
+
+    // Silinemeyenler listeye geri döner; sunucuda silinenler gitmiş kalır. Gerçek durumla
+    // eşitlemek için liste de yenilenir.
+    const failedIds = new Set(failures.map((f) => f.item.id));
+    setItems(previous.filter((i) => !ids.has(i.id) || failedIds.has(i.id)));
+    void fetchList();
+
+    const reason = explainFailure(failures.map((f) => f.error));
+    if (failures.length === group.items.length) {
+      showAlert('Takipten çıkarılamadı', reason);
+    } else {
+      const removed = group.items.length - failures.length;
+      showAlert('Kısmen çıkarıldı', `${removed} beden takipten çıkarıldı, ${failures.length} beden çıkarılamadı. ${reason}`);
     }
   }
 
@@ -211,10 +261,26 @@ export function ProductsScreen({
       setDetailLoadError(null);
     } catch (e) {
       setDetailResolved(null);
-      setDetailLoadError(e instanceof ApiRequestError ? e.message : 'Ürün bilgisi güncellenemedi.');
+      setDetailLoadError(describeError(e, 'Ürün bilgisi güncellenemedi.'));
     } finally {
       setOpeningUrl(null);
-      setDetailGroup(group);
+      setDetailBase({
+        canonicalUrl: group.canonicalUrl,
+        brand: group.brand,
+        name: group.name,
+        imageUrl: group.imageUrl,
+      });
+    }
+  }
+
+  // Detay ekranındaki "Tekrar dene": renk/beden bilgisini yeniden çeker (ekran kapanmaz).
+  async function handleRetryDetail() {
+    if (!detailBase) return;
+    try {
+      setDetailResolved(await resolveProduct(detailBase.canonicalUrl));
+      setDetailLoadError(null);
+    } catch (e) {
+      setDetailLoadError(describeError(e, 'Ürün bilgisi güncellenemedi.'));
     }
   }
 
@@ -250,7 +316,8 @@ export function ProductsScreen({
         group={detailGroup}
         resolved={detailResolved}
         loadError={detailLoadError}
-        onClose={() => setDetailGroup(null)}
+        onRetryLoad={handleRetryDetail}
+        onClose={() => setDetailBase(null)}
         onChanged={fetchList}
       />
     );
@@ -287,6 +354,30 @@ export function ProductsScreen({
           </Pressable>
         }
       />
+
+      {loadError ? (
+        <View style={styles.connectionBanner} accessibilityRole="alert" testID="connection-banner">
+          <View style={styles.connectionBannerBody}>
+            <Icon name="wifi_off" size={18} color={colors.onErrorContainer} />
+            <View style={styles.connectionBannerText}>
+              <Text style={styles.connectionBannerTitle}>Bağlantı kurulamadı</Text>
+              <Text style={styles.connectionBannerSubtitle}>
+                Bilgilerin güncel hali yüklenemedi. Bağlantı gelince otomatik yenilenecek.
+              </Text>
+            </View>
+          </View>
+          <Pressable
+            onPress={handleRetry}
+            disabled={retrying}
+            accessibilityRole="button"
+            hitSlop={8}
+            style={styles.connectionRetry}
+            testID="connection-retry-button"
+          >
+            <Text style={styles.connectionRetryText}>{retrying ? 'Deneniyor…' : 'Tekrar dene'}</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {searchOpen ? (
         <View style={styles.searchBar} testID="search-bar">
@@ -347,6 +438,10 @@ export function ProductsScreen({
 
         {loading ? (
           <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
+        ) : groups.length === 0 && loadError ? (
+          // Liste hiç gelmediyse "Henüz ürün eklemediniz" YANLIŞ olurdu — üstteki uyarı
+          // durumu açıklıyor, burada ürün yokmuş gibi bir boş durum gösterilmiyor.
+          null
         ) : groups.length === 0 ? (
           <View style={styles.empty}>
             <IconCircle

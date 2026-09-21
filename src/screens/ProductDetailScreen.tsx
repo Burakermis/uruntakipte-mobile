@@ -1,7 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { Image, ScrollView, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ApiRequestError, createTrackedProduct, deleteTrackedProduct } from '../api';
 import { Card } from '../components/Card';
 import { ColorChip } from '../components/ColorChip';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -11,7 +10,9 @@ import { SizeSquare } from '../components/SizeSquare';
 import { showAlert } from '../dialog/dialogStore';
 import { getBrandLabel } from '../utils/brands';
 import { confirmAsync } from '../utils/confirm';
+import { explainFailure } from '../utils/errors';
 import { formatPrice } from '../utils/format';
+import { addTrackedProduct, removeTrackedProduct } from '../utils/trackedProducts';
 import { useTheme } from '../theme/ThemeProvider';
 import type { ResolvedProduct, SizeOption, TrackedProductGroup } from '../types';
 import { makeStyles } from './ProductDetailScreen.styles';
@@ -26,6 +27,8 @@ interface ProductDetailScreenProps {
   // gelir — ekran yine de açılır, sadece "ekle" ızgarası gösterilmez.
   resolved: ResolvedProduct | null;
   loadError: string | null;
+  // Renk/beden verisini yeniden çeker ("Tekrar dene"); verilmezse düğme gösterilmez.
+  onRetryLoad?: () => Promise<void>;
   onClose: () => void;
   onChanged: () => void;
 }
@@ -50,6 +53,7 @@ export function ProductDetailScreen({
   group,
   resolved,
   loadError,
+  onRetryLoad,
   onClose,
   onChanged,
 }: ProductDetailScreenProps) {
@@ -59,11 +63,20 @@ export function ProductDetailScreen({
   const originalSkus = useMemo(() => new Set(group.items.map((i) => i.sku)), [group.items]);
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => new Set(originalSkus));
   const [saving, setSaving] = useState(false);
+  const [retryingLoad, setRetryingLoad] = useState(false);
   const [selectedColorName, setSelectedColorName] = useState<string | null>(() => {
     const initial = group.items[0]?.color ?? null;
     if (resolved && initial && resolved.colors.some((c) => c.name === initial)) return initial;
     return resolved?.colors[0]?.name ?? initial;
   });
+
+  // Renk/beden bilgisi sonradan gelirse ("Tekrar dene" başarılı olunca) seçili renk katalogda
+  // yoksa ilk renge düş — ızgara boş kalmasın.
+  useEffect(() => {
+    if (resolved && !resolved.colors.some((c) => c.name === selectedColorName)) {
+      setSelectedColorName(resolved.colors[0]?.name ?? null);
+    }
+  }, [resolved, selectedColorName]);
 
   const dirty = useMemo(() => {
     if (selectedSkus.size !== originalSkus.size) return true;
@@ -129,9 +142,20 @@ export function ProductDetailScreen({
     onClose();
   }
 
+  async function handleRetryLoad() {
+    if (!onRetryLoad) return;
+    setRetryingLoad(true);
+    try {
+      await onRetryLoad();
+    } finally {
+      setRetryingLoad(false);
+    }
+  }
+
   // Taslakla (selectedSkus) orijinal takip (originalSkus) arasındaki farkı
   // hesaplayıp gereken TÜM ekleme/çıkarma isteklerini tek seferde, paralel
-  // gönderir.
+  // gönderir. Her işlem ayrı sonuçlanır: biri başarısız olsa da diğerleri uygulanır ve
+  // kullanıcıya ne olduğu (hangi kısmın kaydedildiği, neden tamamlanamadığı) söylenir.
   async function handleSave() {
     const toRemove = group.items.filter((i) => !selectedSkus.has(i.sku));
     const toAddSkus = Array.from(selectedSkus).filter((sku) => !originalSkus.has(sku));
@@ -142,22 +166,33 @@ export function ProductDetailScreen({
 
     setSaving(true);
     try {
-      await Promise.all([
-        ...toRemove.map((item) => deleteTrackedProduct(item.id, userId)),
-        // Bildirim tercihleri artık backend'de stok durumundan türetiliyor
-        // (bkz. routes/products.js) — burada göndermeye gerek yok.
-        ...toAddSkus.map((sku) =>
-          createTrackedProduct({
-            userId,
-            url: group.canonicalUrl,
-            sku,
-          })
-        ),
+      // Bildirim tercihleri artık backend'de stok durumundan türetiliyor (bkz.
+      // routes/products.js) — burada göndermeye gerek yok. Hem ekleme hem silme geçici bir
+      // aksaklıkta (ağ, 5xx, hız sınırı) sessizce yeniden denenir (bkz. utils/trackedProducts.ts).
+      const results = await Promise.allSettled([
+        ...toRemove.map((item) => removeTrackedProduct(item.id, userId)),
+        ...toAddSkus.map((sku) => addTrackedProduct({ userId, url: group.canonicalUrl, sku })),
       ]);
-      onChanged();
-      onClose();
-    } catch (e) {
-      showAlert('Hata', e instanceof ApiRequestError ? e.message : 'Değişiklikler kaydedilemedi, tekrar dene.');
+      const errors = results.flatMap((r) => (r.status === 'rejected' ? [r.reason] : []));
+
+      if (errors.length === 0) {
+        onChanged();
+        onClose();
+        return;
+      }
+
+      // Kısmen başarılıysa liste yenilenir: bu ekran beden listesini güncel listeden aldığı için
+      // kaydedilenler yansır, taslakta yalnızca tamamlanamayan işlemler "değişiklik" olarak kalır.
+      const reason = explainFailure(errors);
+      if (errors.length < results.length) {
+        onChanged();
+        showAlert(
+          'Kısmen kaydedildi',
+          `Değişikliklerin bir kısmı kaydedildi, ${errors.length} işlem tamamlanamadı. ${reason} Kalanlar için tekrar Kaydet'e dokunabilirsin.`
+        );
+      } else {
+        showAlert('Değişiklikler kaydedilemedi', reason);
+      }
     } finally {
       setSaving(false);
     }
@@ -194,7 +229,23 @@ export function ProductDetailScreen({
           ) : (
             <View style={styles.trackedList}>
               {displayRows.map((row) => (
-                <View key={row.key} style={styles.trackedRow}>
+                // Satıra dokunmak taslakta çıkarma/geri alma yapar — renk/beden bilgisi
+                // yüklenemese bile (ızgara yokken) takipten çıkarma yapılabilsin.
+                <Pressable
+                  key={row.key}
+                  style={styles.trackedRow}
+                  onPress={() => toggleSku(row.sku)}
+                  disabled={saving}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    row.status === 'kept'
+                      ? `${row.color} ${row.size} takipten çıkar`
+                      : row.status === 'removing'
+                      ? `${row.color} ${row.size} takipte kalsın`
+                      : `${row.color} ${row.size} eklemeyi iptal et`
+                  }
+                >
                   <Text
                     style={[
                       styles.trackedLabel,
@@ -206,14 +257,31 @@ export function ProductDetailScreen({
                     {row.color} · {row.size}
                   </Text>
                   <Text style={styles.trackedPrice}>{formatPrice(row.price, row.currency)}</Text>
-                </View>
+                </Pressable>
               ))}
+              {loadError ? (
+                <Text style={styles.trackedHint}>Bir bedeni takipten çıkarmak için üzerine dokun.</Text>
+              ) : null}
             </View>
           )}
         </Card>
 
         {loadError ? (
-          <Text style={styles.loadErrorText}>{loadError}</Text>
+          <View style={styles.loadErrorBox} testID="detail-load-error">
+            <Text style={styles.loadErrorTitle}>Renk ve bedenler yüklenemedi</Text>
+            <Text style={styles.loadErrorText}>{loadError}</Text>
+            {onRetryLoad ? (
+              <Pressable
+                onPress={handleRetryLoad}
+                disabled={retryingLoad}
+                accessibilityRole="button"
+                style={styles.loadErrorRetry}
+                testID="detail-retry-button"
+              >
+                <Text style={styles.loadErrorRetryText}>{retryingLoad ? 'Deneniyor…' : 'Tekrar dene'}</Text>
+              </Pressable>
+            ) : null}
+          </View>
         ) : resolved ? (
           <>
             <SectionTitle style={styles.sectionTitle}>Renk/Beden Ekle ya da Çıkar</SectionTitle>

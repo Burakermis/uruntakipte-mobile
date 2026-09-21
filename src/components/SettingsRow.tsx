@@ -45,7 +45,7 @@ export function SettingsRow({
     <Pressable style={[styles.row, showBorder && styles.rowBorder]} onPress={onPress}>
       <View style={styles.left}>
         <IconCircle name={icon} size={40} backgroundColor={iconBackground} iconColor={iconColor} />
-        <View>
+        <View style={styles.textWrap}>
           <View style={styles.labelRow}>
             <Text style={[styles.label, danger && styles.labelDanger]}>{label}</Text>
             {badge ? (

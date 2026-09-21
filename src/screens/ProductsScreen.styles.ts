@@ -31,6 +31,56 @@ export const makeStyles = (colors: ColorTokens) =>
       ...typography.headlineMd,
       color: colors.onSurface,
     },
+    // Bağlantı hatası uyarısı — başlığın hemen altında, kaydırılsa da sabit kalır.
+    // Dar ekranda "Tekrar dene" alt satıra iner (flexWrap), metin taşmaz.
+    connectionBanner: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      columnGap: 8,
+      rowGap: 4,
+      marginHorizontal: 16,
+      marginTop: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: radii.lg,
+      backgroundColor: colors.errorContainer,
+    },
+    connectionBannerBody: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      flexGrow: 1,
+      flexShrink: 1,
+      flexBasis: 180,
+      gap: 8,
+    },
+    connectionBannerText: {
+      flexShrink: 1,
+      gap: 2,
+    },
+    connectionBannerTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.onErrorContainer,
+    },
+    connectionBannerSubtitle: {
+      fontSize: 12,
+      color: colors.onErrorContainer,
+    },
+    connectionRetry: {
+      minHeight: 36,
+      paddingHorizontal: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginLeft: 'auto',
+    },
+    connectionRetryText: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.onErrorContainer,
+      textDecorationLine: 'underline',
+    },
     searchBar: {
       flexDirection: 'row',
       alignItems: 'center',

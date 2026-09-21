@@ -28,7 +28,9 @@ export function ColorChip({ label, selected, onPress, disabled }: ColorChipProps
       accessibilityState={{ selected, disabled }}
     >
       {selected ? <Icon name="check_circle" size={16} color={colors.primary} /> : null}
-      <Text style={[styles.label, selected && styles.labelSelected]}>{label}</Text>
+      <Text style={[styles.label, selected && styles.labelSelected]} numberOfLines={2}>
+        {label}
+      </Text>
     </Pressable>
   );
 }

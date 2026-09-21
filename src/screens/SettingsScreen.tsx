@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Platform, ScrollView, Text, View } from 'react-native';
+import { Linking, Platform, ScrollView, Text, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
@@ -19,6 +19,8 @@ import { useTheme } from '../theme/ThemeProvider';
 import type { ThemeMode } from '../theme/ThemeProvider';
 import type { UserLimits } from '../types';
 import { withAlpha } from '../utils/color';
+import { describeError } from '../utils/errors';
+import { retryTransient } from '../utils/retry';
 import { makeStyles } from './SettingsScreen.styles';
 
 interface SettingsScreenProps {
@@ -110,9 +112,14 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: Settin
     if (result.status === 'granted') {
       setNotificationStatus('granted');
       try {
-        await registerDevice(userId, result.token, Platform.OS);
-      } catch {
-        showAlert('Bildirimler açıldı', 'Ancak token sunucuya kaydedilemedi. Backend çalışıyor mu?');
+        await retryTransient(() => registerDevice(userId, result.token, Platform.OS));
+      } catch (e) {
+        // İzin verildi ama sunucu bu cihazı bilmiyor → bildirim gelmez; nedeni söylenir ve aynı
+        // satıra tekrar dokunarak yeniden denenebilir.
+        showAlert(
+          'Bildirimler açıldı',
+          `Ancak bu cihaz sunucuya kaydedilemedi, bildirim alamazsın. ${describeError(e)}`
+        );
       }
       return;
     }
@@ -125,6 +132,23 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: Settin
 
     setNotificationStatus('unsupported');
     showAlert('Desteklenmiyor', result.reason);
+  }
+
+  // Gizlilik Politikası / Kullanım Koşulları: yayınlanmış bir sayfa adresi tanımlıysa
+  // (EXPO_PUBLIC_PRIVACY_URL / EXPO_PUBLIC_TERMS_URL) tarayıcıda açılır; tanımlı değilse
+  // (henüz içerik yok) uygulama içi "yakında" sayfası gösterilir.
+  async function openLegal(kind: 'privacy' | 'terms') {
+    const raw = kind === 'privacy' ? process.env.EXPO_PUBLIC_PRIVACY_URL : process.env.EXPO_PUBLIC_TERMS_URL;
+    const url = raw && /^https?:\/\//i.test(raw) ? raw : null;
+    if (!url) {
+      setSub(kind);
+      return;
+    }
+    try {
+      await Linking.openURL(url);
+    } catch {
+      showAlert('Sayfa açılamadı', 'Sayfa şu an açılamıyor. İnternet bağlantını kontrol edip tekrar dene.');
+    }
   }
 
   async function handleCopyDeviceId() {
@@ -211,14 +235,14 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: Settin
             iconBackground={withAlpha(colors.secondaryContainer, 0.2)}
             iconColor={colors.secondary}
             label="Gizlilik Politikası"
-            onPress={() => setSub('privacy')}
+            onPress={() => openLegal('privacy')}
           />
           <SettingsRow
             icon="article"
             iconBackground={withAlpha(colors.secondaryContainer, 0.2)}
             iconColor={colors.secondary}
             label="Kullanım Koşulları"
-            onPress={() => setSub('terms')}
+            onPress={() => openLegal('terms')}
           />
           <SettingsRow
             icon="info"
