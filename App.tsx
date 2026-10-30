@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, View } from 'react-native';
+import { ActivityIndicator, AppState, Platform, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { registerDevice } from './src/api';
 import { DialogHost } from './src/dialog/DialogHost';
-import { registerForPushNotificationsAsync } from './src/notifications';
+import { pushUnsupportedReason, registerForPushNotificationsAsync, showNotificationsOffAtLaunchAlert } from './src/notifications';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
 import { getOrCreateDeviceId } from './src/utils/deviceId';
+import { isNotificationsOptedOut } from './src/utils/notificationPreference';
 import { retryTransient } from './src/utils/retry';
 import { configurePurchases } from './src/purchases';
 import { PremiumScreen } from './src/screens/PremiumScreen';
@@ -58,18 +59,54 @@ function AppContent() {
     // yani hiç oraya girmeyen bir kullanıcı asla bildirim alamıyordu).
     // İzin daha önce verilmiş/reddedilmişse expo-notifications OS düzeyinde
     // yeniden sormuyor, bu yüzden her açılışta çağırmak güvenli ve ucuz.
-    (async () => {
-      const result = await registerForPushNotificationsAsync();
-      if (result.status === 'granted') {
-        try {
-          // Anlık ağ aksaklığında sessizce yeniden denenir; yine olmazsa bir sonraki açılışta
-          // ya da Ayarlar > Bildirim Ayarları'ndan (orada nedeni de gösterilir) tekrar denenir.
-          await retryTransient(() => registerDevice(deviceId, result.token, Platform.OS));
-        } catch {
-          // Açılışta kullanıcıyı bir uyarıyla kesmiyoruz.
+    //
+    // Bildirimler KAPALIYSA (işletim sistemi izni yok ya da kullanıcı Ayarlar'dan kapatmış)
+    // kullanıcı bunu bilmeden fiyat düşüşünü kaçırır; açılışta bir diyalogla bilgilendirilir ve
+    // uygulamadaki Ayarlar sekmesine (anahtarın olduğu yer) yönlendirilir. Tek istisna: izin
+    // bu açılışta İLK KEZ soruldu ve az önce OS penceresinde reddedildi — ardından ikinci bir
+    // uyarı gereksiz, bir sonraki açılışta bilgilendirilir.
+    const userId = deviceId;
+    let running = false;
+    let registered = false;
+    const announceOff = () => showNotificationsOffAtLaunchAlert(() => setScreen('settings'));
+
+    async function setUpPush(announceIfOff: boolean) {
+      if (running) return;
+      running = true;
+      try {
+        // Kullanıcı Ayarlar'dan bildirimleri KAPATTIYSA token yeniden kaydedilmez (kapatma
+        // sessizce geri alınırdı); yalnızca kapalı olduğu hatırlatılır. Push'un hiç çalışmadığı
+        // ortamda (simülatör, web, Android Expo Go) açılabilecek bir şey olmadığından hatırlatılmaz.
+        if (await isNotificationsOptedOut()) {
+          if (announceIfOff && !pushUnsupportedReason()) announceOff();
+          return;
         }
+        const result = await registerForPushNotificationsAsync();
+        if (result.status === 'granted') {
+          registered = true;
+          try {
+            // Anlık ağ aksaklığında sessizce yeniden denenir; yine olmazsa bir sonraki açılışta
+            // ya da Ayarlar > Bildirim Ayarları'ndan (orada nedeni de gösterilir) tekrar denenir.
+            await retryTransient(() => registerDevice(userId, result.token, Platform.OS));
+          } catch {
+            // Açılışta kullanıcıyı bir uyarıyla kesmiyoruz.
+          }
+        } else if (result.status === 'denied' && !result.prompted && announceIfOff) {
+          announceOff();
+        }
+      } finally {
+        running = false;
       }
-    })();
+    }
+
+    setUpPush(true);
+
+    // Kullanıcı cihaz ayarlarından bildirimi açıp uygulamaya dönünce
+    // token'ı hemen kaydet — yoksa bir sonraki soğuk açılışa kadar bildirim gelmez.
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && !registered) setUpPush(false);
+    });
+    return () => subscription.remove();
   }, [deviceId]);
 
   if (!deviceId) {

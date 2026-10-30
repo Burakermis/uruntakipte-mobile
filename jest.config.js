@@ -1,5 +1,5 @@
 // Birim/akış testleri — jest-expo preset'i RN + Expo modüllerini Node'da
-// çalıştırmak için gereken transform/mock'ları getiriyor (bkz. Expo SDK 54
+// çalıştırmak için gereken transform/mock'ları getiriyor (bkz. Expo SDK 58
 // "Unit testing with Jest" dokümanı). Testler `__tests__/` altında, ortak
 // yardımcılar (sahte backend, render sarmalayıcı) `test-utils/` altında.
 module.exports = {

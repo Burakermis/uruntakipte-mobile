@@ -155,6 +155,10 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
     }
 
     if (method === 'POST' && path === '/devices') return respond(200, {});
+    // Bildirimleri kapat: backend'de idempotent 204 (kayıt olmasa da hata vermez).
+    if (method === 'DELETE' && path === '/devices') {
+      return req.query.get('userId') ? respond(204, undefined) : apiError(400, 'INVALID_REQUEST', 'userId query param zorunlu.');
+    }
 
     return apiError(404, 'NO_ROUTE', `${method} ${path} sahte backend'de tanımlı değil`);
   }

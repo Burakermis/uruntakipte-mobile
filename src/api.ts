@@ -170,6 +170,13 @@ export function registerDevice(userId: string, expoPushToken: string, platform: 
   return postJson('/devices', { userId, expoPushToken, platform });
 }
 
+// Kullanıcı Ayarlar'da bildirimleri kapattığında: sunucu bu cihazın push token'larını siler ve
+// bildirim göndermez (bkz. backend/routes/devices.js DELETE). İşletim sistemi izni uygulamadan
+// geri alınamadığı için kapatma ancak sunucu tarafında yapılabiliyor. Tekrar çağrılması zararsız.
+export function unregisterDevice(userId: string): Promise<void> {
+  return deleteRequest(`/devices?userId=${encodeURIComponent(userId)}`);
+}
+
 export function getUserLimits(userId: string): Promise<UserLimits> {
   return getJson<UserLimits>(`/users/${encodeURIComponent(userId)}/limits`);
 }

@@ -113,8 +113,105 @@ describe('bildirim izni durumu', () => {
   });
 });
 
-describe('"Bildirim Ayarları" satırı', () => {
-  it('izin alınırsa durumu "Açık" yapar ve cihazı push token\'ıyla backend\'e kaydeder', async () => {
+// Mağaza kuralları (ör. Apple 4.5.4) uygulama içinden bildirimden çıkış yolu istiyor. İşletim sistemi izni
+// uygulamadan geri alınamadığı için kapatma, sunucudan cihazın token'larını sildirip tercihi saklayarak yapılır.
+const notificationSwitch = () => screen.getByLabelText('Bildirim Ayarları');
+const OPT_OUT_KEY = 'notificationsOptOut';
+
+describe('"Bildirim Ayarları" anahtarı — kapatma', () => {
+  beforeEach(() => getPermissions.mockResolvedValue({ status: 'granted' } as any));
+
+  it('izin verilmişse anahtar AÇIK görünür', async () => {
+    await renderSettings();
+
+    await waitFor(() => expect(notificationSwitch().props.value).toBe(true));
+    expect(notificationRow().getByText('Açık')).toBeTruthy();
+  });
+
+  it('satıra dokunmak bildirimleri KAPATIR: sunucudan cihaz kaydını sildirir, tercihi saklar, izni tekrar istemez', async () => {
+    await renderSettings();
+    await waitFor(() => expect(notificationSwitch().props.value).toBe(true));
+
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+
+    await waitFor(() => expect(notificationRow().getByText('Kapalı')).toBeTruthy());
+    expect(notificationSwitch().props.value).toBe(false);
+    expect(backend.callsTo('DELETE /devices')).toHaveLength(1);
+    expect(backend.callsTo('DELETE /devices')[0].query.get('userId')).toBe(USER);
+    expect(backend.callsTo('POST /devices')).toHaveLength(0);
+    expect(requestPermissions).not.toHaveBeenCalled();
+    expect(await AsyncStorage.getItem(OPT_OUT_KEY)).toBe('1');
+  });
+
+  it('anahtarın kendisini çevirmek de aynı şekilde kapatır', async () => {
+    await renderSettings();
+    await waitFor(() => expect(notificationSwitch().props.value).toBe(true));
+
+    await fireEventAsync(notificationSwitch(), 'valueChange', false);
+
+    await waitFor(() => expect(notificationRow().getByText('Kapalı')).toBeTruthy());
+    expect(backend.callsTo('DELETE /devices')).toHaveLength(1);
+  });
+
+  it('sunucuya ulaşılamazsa anahtar AÇIK kalır (bildirim hâlâ gelebilir), nedeni söylenir ve tercih saklanmaz', async () => {
+    backend.networkDown('DELETE /devices', { times: 3 });
+    await renderSettings();
+    await waitFor(() => expect(notificationSwitch().props.value).toBe(true));
+
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+
+    expect(await screen.findByText('Bildirimler kapatılamadı')).toBeTruthy();
+    expect(screen.getByText('Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.')).toBeTruthy();
+    expect(notificationSwitch().props.value).toBe(true);
+    expect(notificationRow().getByText('Açık')).toBeTruthy();
+    expect(backend.callsTo('DELETE /devices')).toHaveLength(3);
+    expect(await AsyncStorage.getItem(OPT_OUT_KEY)).toBeNull();
+  });
+
+  it('tek seferlik ağ kesintisinde kapatma sessizce yeniden denenir; kullanıcı uyarı görmez', async () => {
+    backend.networkDown('DELETE /devices');
+    await renderSettings();
+    await waitFor(() => expect(notificationSwitch().props.value).toBe(true));
+
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+
+    await waitFor(() => expect(notificationRow().getByText('Kapalı')).toBeTruthy());
+    expect(backend.callsTo('DELETE /devices')).toHaveLength(2);
+    expect(screen.queryByText('Bildirimler kapatılamadı')).toBeNull();
+  });
+
+  it('uygulama içinden kapatılmışsa işletim sistemi izni verilmiş olsa bile "Kapalı" görünür', async () => {
+    await AsyncStorage.setItem(OPT_OUT_KEY, '1');
+
+    await renderSettings();
+
+    await waitFor(() => expect(notificationRow().getByText('Kapalı')).toBeTruthy());
+    expect(notificationSwitch().props.value).toBe(false);
+    expect(requestPermissions).not.toHaveBeenCalled();
+  });
+});
+
+describe('"Bildirim Ayarları" anahtarı — açma', () => {
+  it('kapatılmış bildirimi açınca tercih kalkar, cihaz yeniden kaydolur ve "Açık" olur', async () => {
+    await AsyncStorage.setItem(OPT_OUT_KEY, '1');
+    getPermissions.mockResolvedValue({ status: 'granted' } as any);
+    await renderSettings();
+    await waitFor(() => expect(notificationRow().getByText('Kapalı')).toBeTruthy());
+
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+
+    await waitFor(() => expect(notificationRow().getByText('Açık')).toBeTruthy());
+    expect(notificationSwitch().props.value).toBe(true);
+    expect(backend.callsTo('POST /devices')[0].body).toEqual({
+      userId: USER,
+      expoPushToken: 'ExponentPushToken[test]',
+      platform: 'ios',
+    });
+    expect(backend.callsTo('DELETE /devices')).toHaveLength(0);
+    expect(await AsyncStorage.getItem(OPT_OUT_KEY)).toBeNull();
+  });
+
+  it('izin henüz sorulmadıysa ister; alınırsa anahtarı açar ve cihazı push token\'ıyla backend\'e kaydeder', async () => {
     requestPermissions.mockResolvedValue({ status: 'granted' } as any);
     await renderSettings();
 
@@ -128,16 +225,23 @@ describe('"Bildirim Ayarları" satırı', () => {
     });
   });
 
-  it('izin alınır ama cihaz sunucuya kaydedilemezse (bağlantı yok) sonucunu ve NEDENİNİ söyler — "Backend çalışıyor mu?" değil', async () => {
+  it('izin alınır ama cihaz sunucuya kaydedilemezse (bağlantı yok) anahtar AÇILMAZ; sonucu ve NEDENİNİ söyler — "Backend çalışıyor mu?" değil', async () => {
     backend.networkDown('POST /devices', { times: 3 });
     await renderSettings();
 
     await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
 
-    expect(await screen.findByText('Bildirimler açıldı')).toBeTruthy();
-    expect(screen.getByText('Ancak bu cihaz sunucuya kaydedilemedi, bildirim alamazsın. Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.')).toBeTruthy();
+    expect(await screen.findByText('Bildirimler açılamadı')).toBeTruthy();
+    expect(screen.getByText('Bildirim izni verildi ama bu cihaz sunucuya kaydedilemedi, bu yüzden bildirim alamazsın. Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.')).toBeTruthy();
     expect(screen.queryByText(/Backend/i)).toBeNull();
     expect(backend.callsTo('POST /devices')).toHaveLength(3);
+    expect(notificationSwitch().props.value).toBe(false);
+    expect(notificationRow().getByText('Açılamadı — dokunarak tekrar dene')).toBeTruthy();
+
+    // Anahtarı tekrar çevirmek yeniden dener (bu sefer ağ düzelmiş).
+    fireEvent.press(screen.getByText('Tamam'));
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+    await waitFor(() => expect(notificationRow().getByText('Açık')).toBeTruthy());
   });
 
   it('tek seferlik ağ kesintisinde cihaz kaydı sessizce yeniden denenir; kullanıcı uyarı görmez', async () => {
@@ -147,29 +251,71 @@ describe('"Bildirim Ayarları" satırı', () => {
     await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
 
     await waitFor(() => expect(backend.callsTo('POST /devices')).toHaveLength(2));
-    expect(screen.queryByText('Bildirimler açıldı')).toBeNull();
+    await waitFor(() => expect(notificationRow().getByText('Açık')).toBeTruthy());
+    expect(screen.queryByText('Bildirimler açılamadı')).toBeNull();
   });
 
-  it('kullanıcı izni reddederse durumu "Kapalı" yapar ve cihaz ayarlarına yönlendirir', async () => {
+  it('kullanıcı izni reddederse anahtar KAPALI kalır ve "Ayarları Aç" ile cihaz ayarlarına yönlendirir', async () => {
     requestPermissions.mockResolvedValue({ status: 'denied' } as any);
+    jest.mocked(Linking.openSettings).mockResolvedValue(undefined);
     await renderSettings();
 
     await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
 
-    expect(await screen.findByText('İzin verilmedi')).toBeTruthy();
+    expect(await screen.findByText('Bildirimler kapalı')).toBeTruthy();
     expect(screen.getByText('Kapalı — cihaz ayarlarından aç')).toBeTruthy();
+    expect(notificationSwitch().props.value).toBe(false);
     expect(backend.callsTo('POST /devices')).toHaveLength(0);
+
+    fireEvent.press(screen.getByText('Ayarları Aç'));
+    expect(Linking.openSettings).toHaveBeenCalledTimes(1);
   });
 
-  it('token alınamazsa nedenini kullanıcıya gösterir', async () => {
+  it('izin önceden reddedilmiş ve OS tekrar sormuyorsa anahtara dokununca izin penceresi aranmadan ayarlara yönlendirir', async () => {
+    getPermissions.mockResolvedValue({ status: 'denied', canAskAgain: false } as any);
+    await renderSettings();
+    await waitFor(() => expect(notificationRow().getByText('Kapalı — cihaz ayarlarından aç')).toBeTruthy());
+
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+
+    expect(await screen.findByText('Bildirimler kapalı')).toBeTruthy();
+    expect(screen.getByText('Ayarları Aç')).toBeTruthy();
+    expect(requestPermissions).not.toHaveBeenCalled();
+  });
+
+  // Önceden bu durum "Desteklenmiyor" görünüyordu; oysa ortam destekliyor, token alma geçici olarak başarısızdı.
+  it('token alınamazsa "Desteklenmiyor" DEMEZ; anlaşılır bir mesaj gösterir, teknik hata metni sızdırmaz ve tekrar denenebilir', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.mocked(Notifications.getExpoPushTokenAsync).mockRejectedValue(new Error('Expo servisi yanıt vermedi'));
-    getPermissions.mockResolvedValue({ status: 'granted' } as any);
+    requestPermissions.mockResolvedValue({ status: 'granted' } as any);
+    await renderSettings();
+
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+
+    expect(await screen.findByText('Bildirimler açılamadı')).toBeTruthy();
+    expect(screen.getByText('Bildirimler şu an açılamadı. Biraz sonra tekrar dene.')).toBeTruthy();
+    expect(screen.queryByText('Desteklenmiyor')).toBeNull();
+    expect(screen.queryByText(/Expo servisi yanıt vermedi/)).toBeNull();
+    expect(notificationRow().getByText('Açılamadı — dokunarak tekrar dene')).toBeTruthy();
+
+    // Aynı satıra tekrar dokununca yeniden dener (bu sefer olur).
+    fireEvent.press(screen.getByText('Tamam'));
+    jest.mocked(Notifications.getExpoPushTokenAsync).mockResolvedValue({ data: 'ExponentPushToken[test]' } as any);
+    await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
+    await waitFor(() => expect(notificationRow().getByText('Açık')).toBeTruthy());
+    warn.mockRestore();
+  });
+
+  it('gerçekten desteklenmeyen ortamda (Android Expo Go) "Desteklenmiyor" der ve nedenini söyler', async () => {
+    Platform.OS = 'android';
+    (Constants as any).executionEnvironment = 'storeClient';
     await renderSettings();
 
     await fireEventAsync.press(screen.getByText('Bildirim Ayarları'));
 
     expect(await screen.findByText('Desteklenmiyor')).toBeTruthy();
-    expect(screen.getByText('Push token alınamadı: Expo servisi yanıt vermedi')).toBeTruthy();
+    expect(screen.getByText(/Expo Go push bildirimlerini desteklemiyor/)).toBeTruthy();
+    expect(notificationRow().getByText('Bu ortamda desteklenmiyor')).toBeTruthy();
   });
 });
 
@@ -259,7 +405,7 @@ describe('hakkında ve alt sayfalar', () => {
     it('yayınlanmış bir sayfa adresi tanımlıysa tarayıcıda açar (boş "yakında" sayfasına gitmez)', async () => {
       process.env.EXPO_PUBLIC_PRIVACY_URL = 'https://uruntakipte.example/gizlilik';
       process.env.EXPO_PUBLIC_TERMS_URL = 'https://uruntakipte.example/kosullar';
-      openURL.mockResolvedValue(true);
+      openURL.mockResolvedValue(undefined);
       await renderSettings();
 
       fireEvent.press(screen.getByText('Gizlilik Politikası'));

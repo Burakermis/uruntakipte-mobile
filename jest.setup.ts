@@ -50,7 +50,11 @@ jest.mock('expo-notifications', () => ({
 
 // expo-constants'ın expoConfig'i getter-only (testte değiştirilemiyor) — düz, değiştirilebilir
 // bir nesneyle değiştiriliyor; beforeEach her test için varsayılana döndürüyor.
-jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: null } }));
+jest.mock('expo-constants', () => ({
+  __esModule: true,
+  default: { expoConfig: null, easConfig: null, executionEnvironment: 'standalone' },
+  ExecutionEnvironment: { Bare: 'bare', Standalone: 'standalone', StoreClient: 'storeClient' },
+}));
 
 jest.mock('expo-device', () => ({ __esModule: true, isDevice: true }));
 
@@ -75,6 +79,9 @@ beforeEach(async () => {
   Notifications.getExpoPushTokenAsync.mockReset().mockResolvedValue({ data: 'ExponentPushToken[test]' });
   Notifications.setNotificationChannelAsync.mockReset().mockResolvedValue(undefined);
   Device.isDevice = true;
+  // RN'nin jest kurulumunda AppState.addEventListener abonelik döndürmeyen bir jest.fn; gerçekte
+  // `remove()`'lu bir abonelik döner ve App.tsx unmount'ta onu çağırır.
+  require('react-native').AppState.addEventListener.mockReturnValue({ remove: jest.fn() });
   // Diyalog deposu modül düzeyinde global — önceki testte açık kalan bir uyarı sonrakine sızmasın.
   const dialogStore = require('./src/dialog/dialogStore');
   if (dialogStore.getState().visible) dialogStore.dismiss();
@@ -83,7 +90,16 @@ beforeEach(async () => {
   // testler (retry.test.ts) kendi değerlerini ayarlıyor.
   Object.assign(require('./src/utils/retry').retryConfig, { delaysMs: [0, 0], slowFailureMs: 10_000 });
   require('./test-utils/safeAreaMock').setMockDeviceMetrics(null);
-  require('expo-constants').default.expoConfig = { name: 'ÜrünTakipte', version: '1.0.0', extra: {} };
+  // Geçerli (UUID biçiminde) bir EAS projectId: gerçek yapılandırmadaki yer tutucu push token'ı engeller,
+  // testlerin çoğu token'ın alınabildiği normal durumu varsayar.
+  const Constants = require('expo-constants').default;
+  Constants.expoConfig = {
+    name: 'ÜrünTakipte',
+    version: '1.0.0',
+    extra: { eas: { projectId: '11111111-2222-4333-8444-555555555555' } },
+  };
+  Constants.easConfig = null;
+  Constants.executionEnvironment = 'standalone';
   Purchases.configure.mockReset();
   Purchases.getOfferings.mockReset();
   Purchases.purchasePackage.mockReset();

@@ -1,10 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Linking, Platform, ScrollView, Text, View } from 'react-native';
+import { AppState, Linking, Platform, ScrollView, Text, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
-import { getUserLimits, registerDevice } from '../api';
+import { getUserLimits, registerDevice, unregisterDevice } from '../api';
 import { BottomTabBar } from '../components/BottomTabBar';
 import { Card } from '../components/Card';
 import { HomeHeader } from '../components/HomeHeader';
@@ -14,12 +13,13 @@ import { ScreenHeader } from '../components/ScreenHeader';
 import { SectionTitle } from '../components/SectionTitle';
 import { SettingsRow } from '../components/SettingsRow';
 import { showAlert } from '../dialog/dialogStore';
-import { registerForPushNotificationsAsync } from '../notifications';
+import { pushUnsupportedReason, registerForPushNotificationsAsync, showNotificationsOffAlert } from '../notifications';
 import { useTheme } from '../theme/ThemeProvider';
 import type { ThemeMode } from '../theme/ThemeProvider';
 import type { UserLimits } from '../types';
 import { withAlpha } from '../utils/color';
 import { describeError } from '../utils/errors';
+import { isNotificationsOptedOut, setNotificationsOptedOut } from '../utils/notificationPreference';
 import { retryTransient } from '../utils/retry';
 import { makeStyles } from './SettingsScreen.styles';
 
@@ -30,14 +30,18 @@ interface SettingsScreenProps {
 }
 
 type SubScreen = 'main' | 'notifications' | 'privacy' | 'terms';
-type NotificationStatus = 'unknown' | 'checking' | 'granted' | 'denied' | 'unsupported';
+// on: anahtar açık (izin var, kullanıcı kapatmamış) · off: kullanıcı uygulama içinden kapattı ·
+// denied: işletim sistemi izni yok · unknown: izin henüz sorulmadı
+type NotificationStatus = 'unknown' | 'checking' | 'on' | 'off' | 'denied' | 'unsupported' | 'error';
 
 const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string | undefined> = {
   unknown: undefined,
-  checking: 'Kontrol ediliyor…',
-  granted: 'Açık',
+  checking: 'Güncelleniyor…',
+  on: 'Açık',
+  off: 'Kapalı',
   denied: 'Kapalı — cihaz ayarlarından aç',
   unsupported: 'Bu ortamda desteklenmiyor',
+  error: 'Açılamadı — dokunarak tekrar dene',
 };
 
 const THEME_MODE_LABEL: Record<ThemeMode, string> = {
@@ -93,40 +97,88 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: Settin
     getUserLimits(userId).then(setLimits).catch(() => {});
   }, [userId]);
 
-  useEffect(() => {
-    // App.tsx açılışta izni zaten isteyip token'ı kaydetmiş olabilir — bu
-    // ekran o kararı OKUYUP gösteriyor, tekrar izin istemiyor (öyle bir şey
-    // olsaydı her Ayarlar'a girişte gereksiz bir OS diyaloğu tetiklenirdi).
-    (async () => {
-      if (Platform.OS === 'web') return setNotificationStatus('unsupported');
-      if (!Device.isDevice) return setNotificationStatus('unsupported');
+  // App.tsx açılışta izni zaten isteyip token'ı kaydetmiş olabilir — bu
+  // ekran o kararı OKUYUP gösteriyor, tekrar izin istemiyor (öyle bir şey
+  // olsaydı her Ayarlar'a girişte gereksiz bir OS diyaloğu tetiklenirdi).
+  // Kullanıcı cihaz ayarlarından izni açıp/kapatıp dönebilir: uygulama ön plana gelince yeniden okunur.
+  // İşlem sürerken (checking) ve token hatası gösterilirken (error) ezilmez.
+  async function refreshNotificationStatus() {
+    let next: NotificationStatus;
+    if (pushUnsupportedReason()) next = 'unsupported';
+    // Kullanıcı anahtarı kapattıysa işletim sistemi izni hâlâ "verilmiş" olsa da kapalı görünür.
+    else if (await isNotificationsOptedOut()) next = 'off';
+    else {
       const { status } = await Notifications.getPermissionsAsync();
-      setNotificationStatus(status === 'granted' ? 'granted' : status === 'denied' ? 'denied' : 'unknown');
-    })();
+      next = status === 'granted' ? 'on' : status === 'denied' ? 'denied' : 'unknown';
+    }
+    setNotificationStatus((prev) => (prev === 'checking' || prev === 'error' ? prev : next));
+  }
+
+  useEffect(() => {
+    refreshNotificationStatus();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refreshNotificationStatus();
+    });
+    return () => subscription.remove();
   }, []);
 
-  async function handleNotificationSettingsPress() {
+  // Mağaza kuralları (ör. Apple 4.5.4) uygulama içinden bildirimden çıkış yolu istiyor. İşletim
+  // sistemi izni uygulamadan geri alınamadığından kapatma, sunucudan bu cihazın token'larını
+  // sildirip tercihi saklayarak yapılır; açma ise izin + token + sunucu kaydıdır.
+  async function handleNotificationsToggle(next: boolean) {
+    const previous = notificationStatus;
     setNotificationStatus('checking');
+    if (next) await turnOnNotifications();
+    else await turnOffNotifications(previous);
+  }
+
+  async function turnOffNotifications(previous: NotificationStatus) {
+    try {
+      await retryTransient(() => unregisterDevice(userId));
+    } catch (e) {
+      // Sunucu hâlâ bildirim gönderebilir → anahtar eski konumunda kalır, nedeni söylenir.
+      setNotificationStatus(previous);
+      showAlert('Bildirimler kapatılamadı', describeError(e));
+      return;
+    }
+    // Sunucu artık göndermiyor; açılışta token'ın yeniden kaydedilmemesi için tercih saklanır.
+    await setNotificationsOptedOut(true);
+    setNotificationStatus('off');
+  }
+
+  async function turnOnNotifications() {
+    // Kullanıcı bildirim İSTEDİ: önceki "kapattım" tercihi kalkar ki izin/kayıt sonradan
+    // tamamlansa bile (ör. ayarlardan izin verince) açılışta yeniden kaydolsun.
+    await setNotificationsOptedOut(false);
     const result = await registerForPushNotificationsAsync();
 
     if (result.status === 'granted') {
-      setNotificationStatus('granted');
       try {
         await retryTransient(() => registerDevice(userId, result.token, Platform.OS));
       } catch (e) {
-        // İzin verildi ama sunucu bu cihazı bilmiyor → bildirim gelmez; nedeni söylenir ve aynı
-        // satıra tekrar dokunarak yeniden denenebilir.
+        // İzin verildi ama sunucu bu cihazı bilmiyor → bildirim gelmez. Anahtar "açık" gösterilmez;
+        // tekrar çevrilerek yeniden denenebilir (açılışta da kendiliğinden denenir).
+        setNotificationStatus('error');
         showAlert(
-          'Bildirimler açıldı',
-          `Ancak bu cihaz sunucuya kaydedilemedi, bildirim alamazsın. ${describeError(e)}`
+          'Bildirimler açılamadı',
+          `Bildirim izni verildi ama bu cihaz sunucuya kaydedilemedi, bu yüzden bildirim alamazsın. ${describeError(e)}`
         );
+        return;
       }
+      setNotificationStatus('on');
       return;
     }
 
     if (result.status === 'denied') {
       setNotificationStatus('denied');
-      showAlert('İzin verilmedi', 'Bildirim almak için cihaz ayarlarından izin vermen gerekiyor.');
+      showNotificationsOffAlert();
+      return;
+    }
+
+    if (result.status === 'error') {
+      // Ortam destekliyor, ama şu an açılamadı → "Desteklenmiyor" demek yanlış olur; tekrar denenebilir.
+      setNotificationStatus('error');
+      showAlert('Bildirimler açılamadı', result.reason);
       return;
     }
 
@@ -197,8 +249,9 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: Settin
             iconColor={colors.primary}
             label="Bildirim Ayarları"
             statusText={NOTIFICATION_STATUS_LABEL[notificationStatus]}
-            showChevron={false}
-            onPress={handleNotificationSettingsPress}
+            switchValue={notificationStatus === 'on'}
+            onSwitchChange={handleNotificationsToggle}
+            disabled={notificationStatus === 'checking'}
           />
           <SettingsRow
             icon="history"

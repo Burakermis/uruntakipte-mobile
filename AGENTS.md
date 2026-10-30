@@ -1,8 +1,8 @@
 # Expo HAS CHANGED
 
-Read the exact versioned docs at https://docs.expo.dev/versions/v54.0.0/ before writing any code.
+Read the exact versioned docs at https://docs.expo.dev/versions/v58.0.0/ before writing any code.
 
-(Downgraded from SDK 57 to 54 on 2026-08-18: the public App Store/Play Store
-build of Expo Go has been frozen at SDK 54 since May 2026 — SDK 55+ requires
-either `eas go` with a paid Apple Developer account, or the iOS Simulator.
-SDK 54 lets you test in the plain Expo Go app with no extra account.)
+(Upgraded from SDK 54 to 58 on 2026-10-30: the App Store build of Expo Go is
+now SDK 58 and iOS devices cannot install older Expo Go versions, so the
+project must match the latest SDK. Node >= 22.13 is required by the SDK 58
+tooling, e.g. `expo-doctor`.)
