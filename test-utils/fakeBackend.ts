@@ -57,6 +57,7 @@ export const tokenFor = (id: string) => `token-${id}`;
 export function createFakeBackend(options: FakeBackendOptions = {}) {
   // Sunucu kimliği KENDİ üretir (POST /auth/register); testler sabit bir kimlik isteyebilir.
   let registrations = 0;
+  const deletedUsers = new Set<string>(); // silinen hesapların kimlikleri: anahtarları artık 401 döner
   const userId = options.userId ?? 'test-device';
   let products: TrackedProduct[] = [...(options.products ?? [])];
   const catalog = new Map<string, ResolvedProduct>((options.catalog ?? []).map((p) => [p.canonicalUrl, p]));
@@ -89,14 +90,16 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
 
     if (method === 'POST' && path === '/auth/register') {
       registrations += 1;
-      return respond(201, { userId, token: tokenFor(userId) });
+      // Kayıt sabit kimlik döner; o kimlik silinmişse YENİ bir kimlik verilir (gerçek backend her seferinde yenisini üretir).
+      const issued = deletedUsers.has(userId) ? `${userId}-r${registrations}` : userId;
+      return respond(201, { userId: issued, token: tokenFor(issued) });
     }
 
     // Gerçek backend gibi: kayıt dışında her uç geçerli bir Bearer token ister ve
     // gövde/sorgu/yoldaki userId token'daki kimlikle aynı olmalı.
     const bearer = /^Bearer token-(.+)$/.exec(req.headers.authorization ?? '');
-    if (!bearer) return apiError(401, 'UNAUTHORIZED', 'Oturum doğrulanamadı.');
-    const pathUser = /^\/users\/([^/]+)\//.exec(path)?.[1];
+    if (!bearer || deletedUsers.has(bearer[1])) return apiError(401, 'UNAUTHORIZED', 'Oturum doğrulanamadı.');
+    const pathUser = /^\/users\/([^/]+)(?:\/|$)/.exec(path)?.[1];
     for (const supplied of [req.query.get('userId'), body?.userId, pathUser]) {
       if (supplied != null && supplied !== bearer[1]) return apiError(403, 'FORBIDDEN', 'Bu kaynağa erişim iznin yok.');
     }
@@ -166,6 +169,14 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
     const check = path.match(/^\/products\/(\d+)\/check-now$/);
     if (method === 'POST' && check) return respond(200, { id: Number(check[1]), ok: true });
 
+    // Hesap silme: kullanıcının verisi gider, anahtarı geçersiz olur (backend routes/users.js DELETE).
+    const delUser = path.match(/^\/users\/([^/]+)$/);
+    if (method === 'DELETE' && delUser) {
+      deletedUsers.add(delUser[1]);
+      products = [];
+      return respond(204, undefined);
+    }
+
     if (method === 'GET' && /^\/users\/[^/]+\/limits$/.test(path)) return respond(200, currentLimits());
 
     if (method === 'POST' && /^\/users\/[^/]+\/(premium|sync-premium)$/.test(path)) {
@@ -216,6 +227,9 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
     userId,
     get registrations() {
       return registrations;
+    },
+    get deletedUsers() {
+      return deletedUsers;
     },
     fetch: fetchImpl,
     calls,

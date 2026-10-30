@@ -17,7 +17,7 @@ jest.mock('react-native/Libraries/Utilities/useColorScheme', () => ({ __esModule
 const osScheme = jest.mocked(useColorScheme);
 
 const USER = 'cihaz-1234-abcd';
-const callbacks = { onOpenProducts: jest.fn(), onOpenPremium: jest.fn() };
+const callbacks = { onOpenProducts: jest.fn(), onOpenPremium: jest.fn(), onAccountDeleted: jest.fn() };
 let backend: FakeBackend;
 
 const getPermissions = jest.mocked(Notifications.getPermissionsAsync);
@@ -316,6 +316,101 @@ describe('"Bildirim Ayarları" anahtarı — açma', () => {
     expect(await screen.findByText('Desteklenmiyor')).toBeTruthy();
     expect(screen.getByText(/Expo Go push bildirimlerini desteklemiyor/)).toBeTruthy();
     expect(notificationRow().getByText('Bu ortamda desteklenmiyor')).toBeTruthy();
+  });
+});
+
+describe('hesabı sil', () => {
+  const deleteCalls = () => backend.callsTo('DELETE /users/*');
+  const openConfirm = () => fireEvent.press(screen.getByText('Hesabımı ve Verilerimi Sil'));
+
+  it('"Hesabımı ve Verilerimi Sil" satırına dokununca ONAY ister, henüz hiçbir şey silmez', async () => {
+    await renderSettings();
+
+    openConfirm();
+
+    expect(await screen.findByText('Hesabını silmek istiyor musun?')).toBeTruthy();
+    expect(screen.getByText(/Bu işlem geri alınamaz/)).toBeTruthy();
+    expect(deleteCalls()).toHaveLength(0);
+    expect(callbacks.onAccountDeleted).not.toHaveBeenCalled();
+  });
+
+  it('"Vazgeç" hiçbir şeyi silmez', async () => {
+    await renderSettings();
+    openConfirm();
+
+    fireEvent.press(await screen.findByText('Vazgeç'));
+
+    expect(screen.queryByText('Hesabını silmek istiyor musun?')).toBeNull();
+    expect(deleteCalls()).toHaveLength(0);
+    expect(callbacks.onAccountDeleted).not.toHaveBeenCalled();
+  });
+
+  it('onaylayınca kendi kimliğiyle DELETE atar, "silindi" der ve uygulamaya haber verir', async () => {
+    await renderSettings();
+    openConfirm();
+
+    await fireEventAsync.press(await screen.findByText('Hesabımı Sil'));
+
+    await waitFor(() => expect(callbacks.onAccountDeleted).toHaveBeenCalledTimes(1));
+    expect(deleteCalls()).toHaveLength(1);
+    expect(deleteCalls()[0].path).toBe(`/users/${USER}`);
+    expect(deleteCalls()[0].headers.authorization).toBe(`Bearer token-${USER}`);
+    expect(await screen.findByText('Hesabın silindi')).toBeTruthy();
+  });
+
+  it('ücretsiz kullanıcıya abonelik uyarısı göstermez', async () => {
+    await renderSettings();
+    await screen.findByText('Ücretsiz plan');
+    openConfirm();
+
+    await screen.findByText('Hesabını silmek istiyor musun?');
+    expect(screen.queryByText(/aboneliğin iptal olmaz/)).toBeNull();
+  });
+
+  it('PREMIUM kullanıcıya uyarır: hesabı silmek mağazadaki aboneliği iptal ETMEZ', async () => {
+    backend = installFakeBackend({ userId: USER, limits: { isPremium: true } });
+    await renderSettings();
+    await screen.findByText('Premium üye');
+
+    openConfirm();
+
+    expect(await screen.findByText(/Premium aboneliğin iptal olmaz[\s\S]*App Store \/ Google Play/)).toBeTruthy();
+  });
+
+  it('anlık ağ kesintisinde silme sessizce yeniden denenir ve başarılı olur', async () => {
+    backend.networkDown('DELETE /users/*');
+    await renderSettings();
+    openConfirm();
+
+    await fireEventAsync.press(await screen.findByText('Hesabımı Sil'));
+
+    await waitFor(() => expect(callbacks.onAccountDeleted).toHaveBeenCalledTimes(1));
+    expect(deleteCalls()).toHaveLength(2);
+  });
+
+  it('silme hiç yapılamazsa (sunucu kapalı) hata gösterir, uygulamaya "silindi" DEMEZ ve tekrar denenebilir', async () => {
+    backend.networkDown('DELETE /users/*', { times: 3 });
+    await renderSettings();
+    openConfirm();
+
+    await fireEventAsync.press(await screen.findByText('Hesabımı Sil'));
+
+    expect(await screen.findByText('Hesap silinemedi')).toBeTruthy();
+    expect(callbacks.onAccountDeleted).not.toHaveBeenCalled();
+    expect(screen.queryByText('Hesabın silindi')).toBeNull();
+    expect(screen.getByText('Takiplerin ve bildirim kayıtların kalıcı olarak silinir')).toBeTruthy(); // satır yeniden kullanılabilir
+  });
+
+  it('yeniden denemede 401 gelirse (ilk istek sunucuda tamamlandı, yanıt kayboldu) hesap silinmiş sayılır', async () => {
+    backend.networkDown('DELETE /users/*'); // 1. deneme: yanıt kayboldu
+    backend.failWith('DELETE /users/*', 401, 'UNAUTHORIZED', 'Oturum doğrulanamadı.', { after: 1 }); // 2. deneme: artık silinmiş
+    await renderSettings();
+    openConfirm();
+
+    await fireEventAsync.press(await screen.findByText('Hesabımı Sil'));
+
+    await waitFor(() => expect(callbacks.onAccountDeleted).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Hesap silinemedi')).toBeNull();
   });
 });
 

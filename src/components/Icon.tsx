@@ -39,6 +39,7 @@ const SYMBOL_TO_MATERIAL_ICON: Record<string, React.ComponentProps<typeof Materi
   article: 'file-document-outline',
   info: 'information-outline',
   fingerprint: 'fingerprint',
+  delete_forever: 'delete-outline',
   chevron_left: 'chevron-left',
   view_list: 'view-list',
   grid_view: 'view-grid-outline',

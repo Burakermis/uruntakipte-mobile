@@ -204,6 +204,13 @@ export function unregisterDevice(userId: string): Promise<void> {
   return deleteRequest(`/devices?userId=${encodeURIComponent(userId)}`);
 }
 
+// Hesabı ve tüm verilerini kalıcı siler (bkz. backend/routes/users.js DELETE /users/:userId): takipler,
+// bildirim kayıtları, plan kaydı. Eldeki oturum anahtarı artık geçersiz olur; mağazadaki abonelik İPTAL
+// EDİLMEZ (yalnızca Apple/Google yapabilir).
+export function deleteAccount(userId: string): Promise<void> {
+  return deleteRequest(`/users/${encodeURIComponent(userId)}`);
+}
+
 export function getUserLimits(userId: string): Promise<UserLimits> {
   return getJson<UserLimits>(`/users/${encodeURIComponent(userId)}/limits`);
 }

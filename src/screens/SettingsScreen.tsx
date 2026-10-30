@@ -3,7 +3,7 @@ import { AppState, Linking, Platform, ScrollView, Text, View } from 'react-nativ
 import * as Clipboard from 'expo-clipboard';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
-import { getUserLimits, registerDevice, unregisterDevice } from '../api';
+import { ApiRequestError, deleteAccount, getUserLimits, registerDevice, unregisterDevice } from '../api';
 import { BottomTabBar } from '../components/BottomTabBar';
 import { Card } from '../components/Card';
 import { HomeHeader } from '../components/HomeHeader';
@@ -27,6 +27,8 @@ interface SettingsScreenProps {
   userId: string;
   onOpenProducts: () => void;
   onOpenPremium: () => void;
+  // Hesap sunucuda silindikten sonra çağrılır: App oturumu sıfırlayıp yeni bir kimlikle başlar.
+  onAccountDeleted: () => void;
 }
 
 type SubScreen = 'main' | 'notifications' | 'privacy' | 'terms';
@@ -86,12 +88,13 @@ const PLACEHOLDER_CONTENT: Record<Exclude<SubScreen, 'main'>, {
 // Hakkında bölümü değişmedi. Alt sayfalar (bildirim geçmişi, yasal metinler)
 // henüz backend/içerik olmadığı için basit birer "yakında" ekranı; kendi
 // state'i içinde, App.tsx'e yeni route eklemeden yönetiliyor.
-export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: SettingsScreenProps) {
+export function SettingsScreen({ userId, onOpenProducts, onOpenPremium, onAccountDeleted }: SettingsScreenProps) {
   const { colors, mode, setMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [sub, setSub] = useState<SubScreen>('main');
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>('unknown');
   const [limits, setLimits] = useState<UserLimits | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     getUserLimits(userId).then(setLimits).catch(() => {});
@@ -201,6 +204,41 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: Settin
     } catch {
       showAlert('Sayfa açılamadı', 'Sayfa şu an açılamıyor. İnternet bağlantını kontrol edip tekrar dene.');
     }
+  }
+
+  // Uygulama içi hesap silme (App Store / Google Play politikası). İki aşamalı: önce onay, sonra silme.
+  // Premium kullanıcıya abonelik uyarısı: hesabı silmek mağazadaki aboneliği İPTAL ETMEZ.
+  function confirmDeleteAccount() {
+    if (deleting) return;
+    const subscriptionNote = limits?.isPremium
+      ? '\n\nDikkat: Premium aboneliğin iptal olmaz. Ücretlendirmeyi durdurmak için aboneliği App Store / Google Play hesabından ayrıca iptal etmelisin.'
+      : '';
+    showAlert(
+      'Hesabını silmek istiyor musun?',
+      'Tüm takiplerin, bildirim kayıtların ve plan bilgin sunucularımızdan kalıcı olarak silinir. Bu işlem geri alınamaz.' +
+        subscriptionNote,
+      [
+        { text: 'Vazgeç', style: 'cancel' },
+        { text: 'Hesabımı Sil', style: 'destructive', onPress: runDeleteAccount },
+      ]
+    );
+  }
+
+  async function runDeleteAccount() {
+    setDeleting(true);
+    try {
+      await retryTransient(() => deleteAccount(userId));
+    } catch (error) {
+      // 401: hesap zaten silinmiş (ör. ilk istek sunucuda tamamlandı, yanıt kayboldu ve yeniden deneme
+      // reddedildi) — amaç gerçekleşti, başarı say.
+      if (!(error instanceof ApiRequestError && error.status === 401)) {
+        setDeleting(false);
+        showAlert('Hesap silinemedi', describeError(error));
+        return;
+      }
+    }
+    showAlert('Hesabın silindi', 'Tüm verilerin silindi. İstersen uygulamayı yeni bir hesapla kullanmaya devam edebilirsin.');
+    onAccountDeleted();
   }
 
   async function handleCopyDeviceId() {
@@ -315,6 +353,21 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium }: Settin
             showChevron={false}
             showBorder={false}
             onPress={handleCopyDeviceId}
+          />
+        </Card>
+
+        <SectionTitle>Veriler</SectionTitle>
+        <Card style={styles.card}>
+          <SettingsRow
+            icon="delete_forever"
+            iconBackground={withAlpha(colors.error, 0.1)}
+            iconColor={colors.error}
+            label="Hesabımı ve Verilerimi Sil"
+            statusText={deleting ? 'Siliniyor…' : 'Takiplerin ve bildirim kayıtların kalıcı olarak silinir'}
+            danger
+            showBorder={false}
+            disabled={deleting}
+            onPress={confirmDeleteAccount}
           />
         </Card>
 

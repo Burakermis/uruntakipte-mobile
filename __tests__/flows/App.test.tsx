@@ -369,6 +369,30 @@ describe('oturum', () => {
   });
 });
 
+describe('hesap silme (uçtan uca)', () => {
+  it('Ayarlar\'dan hesap silinince veri gider, eski anahtar ölür ve uygulama YENİ kimlikle sıfırdan açılır', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ userId: 'test-device', products: [trackedProduct({ id: 1 })] });
+    await launchApp();
+    await waitFor(() => expect(cards()).toHaveLength(1));
+
+    fireEvent.press(screen.getByText('Ayarlar'));
+    fireEvent.press(await screen.findByText('Hesabımı ve Verilerimi Sil'));
+    await fireEventAsync.press(await screen.findByText('Hesabımı Sil'));
+
+    // Sunucuda silindi; eski kimlik artık reddediliyor
+    expect(backend.deletedUsers.has('test-device')).toBe(true);
+    // Uygulama Ürünlerim'e döner ve sıfırdan, YENİ kimlikle açılır (liste boş)
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(backend.registrations).toBe(1);
+    const session = JSON.parse((await SecureStore.getItemAsync('session'))!);
+    expect(session.userId).not.toBe('test-device');
+    const lastList = backend.callsTo('GET /products').at(-1)!;
+    expect(lastList.query.get('userId')).toBe(session.userId);
+    expect(lastList.headers.authorization).toBe(`Bearer ${tokenFor(session.userId)}`);
+  });
+});
+
 describe('ücretsiz limit → Premium → ekleme (uçtan uca)', () => {
   it('limit dolunca Premium\'a yönlendirir; premium olunca aynı kullanıcı yeni ürün ekleyebilir', async () => {
     await seedSession('test-device');

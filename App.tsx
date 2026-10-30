@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Platform, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -65,21 +65,31 @@ function AppContent() {
     startSession();
   }, [startSession]);
 
-  // Sunucu token'ı reddederse (401) kayıtlı oturum silinip yenisi alınır.
-  useEffect(() => {
-    let renewing = false;
-    setUnauthorizedHandler(() => {
-      if (renewing) return;
-      renewing = true;
-      setAuthToken(null);
-      clearSession()
-        .then(startSession)
-        .finally(() => {
-          renewing = false;
-        });
-    });
-    return () => setUnauthorizedHandler(null);
+  // Kayıtlı oturumu siler ve yenisini alır. İki durumda çağrılır: sunucu token'ı reddettiğinde (401) ve
+  // kullanıcı hesabını sildiğinde. Eşzamanlı çağrılar tek yenilemeye indirgenir (ör. silmeden hemen sonra
+  // uçuştaki bir isteğin 401'i).
+  const renewing = useRef(false);
+  const renewSession = useCallback(() => {
+    if (renewing.current) return;
+    renewing.current = true;
+    setAuthToken(null);
+    setSession(null); // eski kimlikle ekran yenilemesi olmasın; kimlik gelene kadar yükleniyor gösterilir
+    clearSession()
+      .then(startSession)
+      .finally(() => {
+        renewing.current = false;
+      });
   }, [startSession]);
+
+  useEffect(() => {
+    setUnauthorizedHandler(renewSession);
+    return () => setUnauthorizedHandler(null);
+  }, [renewSession]);
+
+  const handleAccountDeleted = useCallback(() => {
+    setScreen('products');
+    renewSession();
+  }, [renewSession]);
 
   useEffect(() => {
     if (!deviceId) return;
@@ -183,6 +193,7 @@ function AppContent() {
         userId={deviceId}
         onOpenProducts={() => setScreen('products')}
         onOpenPremium={() => setScreen('premium')}
+        onAccountDeleted={handleAccountDeleted}
       />
     );
   } else {
