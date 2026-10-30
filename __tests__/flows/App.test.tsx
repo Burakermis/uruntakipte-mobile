@@ -1,7 +1,10 @@
 import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
+import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
-import { fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { AppState, type AppStateStatus, Linking } from 'react-native';
+import { act, fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import App from '../../App';
 import { installFakeBackend, type FakeBackend } from '../../test-utils/fakeBackend';
 import { resolvedProduct, trackedProduct, ZARA_URL } from '../../test-utils/fixtures';
@@ -67,6 +70,20 @@ describe('açılış', () => {
     expect(backend.callsTo('POST /devices')).toHaveLength(0);
   });
 
+  it('push için geçerli bir EAS projectId yoksa (app.json yer tutucusu) uygulama normal açılır; kullanıcı hata görmez', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    (Constants as any).expoConfig = { extra: { eas: { projectId: 'REPLACE_WITH_EAS_PROJECT_ID' } } };
+    await launchApp();
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(Notifications.getExpoPushTokenAsync).not.toHaveBeenCalled();
+    expect(backend.callsTo('POST /devices')).toHaveLength(0);
+    expect(screen.queryByText('Desteklenmiyor')).toBeNull();
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+    warn.mockRestore();
+  });
+
   it('kalıcı depo okunamasa bile açılış ekranında takılmaz, uygulama açılır', async () => {
     // Yalnızca cihaz kimliği okuması düşüyor (mock jest.fn: özgün gerçekleme sonunda geri konuyor)
     const getItem = jest.mocked(AsyncStorage.getItem);
@@ -100,6 +117,193 @@ describe('açılış', () => {
     expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
     await waitFor(() => expect(backend.callsTo('POST /devices')).toHaveLength(3));
     expect(screen.queryByText('Bildirimler açıldı')).toBeNull();
+  });
+});
+
+// Bildirimler kapalıyken (OS izni yok ya da kullanıcı Ayarlar'dan kapatmış) kullanıcı fiyat düşüşünü
+// kaçırır. Açılışta diyalogla bilgilendirilir ve uygulamadaki Ayarlar sekmesine yönlendirilir.
+describe('açılışta bildirimler kapalıysa', () => {
+  const getPermissions = jest.mocked(Notifications.getPermissionsAsync);
+  const requestPermissions = jest.mocked(Notifications.requestPermissionsAsync);
+  const openSettings = jest.mocked(Linking.openSettings);
+  // App ve (açıksa) Ayarlar ekranı kendi AppState dinleyicisini ekler: hepsi tutulur, hepsi tetiklenir.
+  let appStateListeners: Array<(state: AppStateStatus) => void>;
+  let removeListener: jest.Mock;
+
+  beforeEach(() => {
+    appStateListeners = [];
+    removeListener = jest.fn();
+    jest.spyOn(AppState, 'addEventListener').mockImplementation(((_type: string, listener: (state: AppStateStatus) => void) => {
+      appStateListeners.push(listener);
+      return { remove: removeListener };
+    }) as any);
+    openSettings.mockResolvedValue(undefined);
+    getPermissions.mockResolvedValue({ status: 'denied', canAskAgain: false } as any);
+  });
+  afterEach(() => {
+    jest.mocked(AppState.addEventListener).mockRestore();
+  });
+
+  const comeBackToApp = () => act(async () => appStateListeners.forEach((listener) => listener('active')));
+  const notificationRow = () => screen.getByText('Bildirim Ayarları');
+
+  it('izin daha önce reddedilmişse diyalogla bilgilendirir; "Ayarlara Git" cihaz ayarlarını değil uygulamadaki Ayarlar sekmesini açar', async () => {
+    await launchApp();
+
+    expect(await screen.findByText('Bildirimler kapalı')).toBeTruthy();
+    expect(screen.getByText(/Ayarlar sekmesinden açabilirsin/)).toBeTruthy();
+    expect(requestPermissions).not.toHaveBeenCalled();
+    expect(backend.callsTo('POST /devices')).toHaveLength(0);
+
+    fireEvent.press(screen.getByText('Ayarlara Git'));
+
+    expect(await screen.findByText('HESAP AYARLARI')).toBeTruthy();
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+    expect(openSettings).not.toHaveBeenCalled();
+    expect(await screen.findByText('Kapalı — cihaz ayarlarından aç')).toBeTruthy();
+  });
+
+  it('"Şimdi Değil" uyarıyı kapatır, Ayarlar sekmesine gitmez; uygulama normal kullanılır', async () => {
+    await launchApp();
+    await screen.findByText('Bildirimler kapalı');
+
+    fireEvent.press(screen.getByText('Şimdi Değil'));
+
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+    expect(screen.queryByText('HESAP AYARLARI')).toBeNull();
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+  });
+
+  it('kullanıcı izin penceresinde AZ ÖNCE "İzin verme"ye bastıysa (ilk soruş) hemen ardından ikinci bir uyarı çıkmaz', async () => {
+    getPermissions.mockResolvedValue({ status: 'undetermined' } as any);
+    requestPermissions.mockResolvedValue({ status: 'denied' } as any);
+    await launchApp();
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    await waitFor(() => expect(requestPermissions).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+  });
+
+  // Android: daha önce reddedilmiş izin için istek, pencere açmadan "reddedildi" dönebilir —
+  // kullanıcı hiçbir şey görmediği için kapalı olduğundan haberi yoktur.
+  it('izin daha önce reddedilmiş ve istek pencere açmadan reddedilirse (Android) yine bilgilendirir', async () => {
+    getPermissions.mockResolvedValue({ status: 'denied', canAskAgain: true } as any);
+    requestPermissions.mockResolvedValue({ status: 'denied' } as any);
+    await launchApp();
+
+    expect(await screen.findByText('Bildirimler kapalı')).toBeTruthy();
+    expect(screen.getByText('Ayarlara Git')).toBeTruthy();
+  });
+
+  it('izin verilmişse uyarı çıkmaz', async () => {
+    getPermissions.mockResolvedValue({ status: 'granted' } as any);
+    await launchApp();
+
+    await waitFor(() => expect(backend.callsTo('POST /devices')).toHaveLength(1));
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+  });
+
+  it('simülatörde/web\'de (push zaten yok) kapalı uyarısı göstermez', async () => {
+    (Device as any).isDevice = false;
+    await launchApp();
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+    expect(screen.queryByText('Desteklenmiyor')).toBeNull();
+  });
+
+  // Kullanıcı Ayarlar'daki anahtarı kapattıysa sunucu token'ı sildi: açılışta yeniden kaydetmek kapatmayı
+  // sessizce geri alırdı. Ama kapalı olduğu hatırlatılır ve anahtarın olduğu yere yönlendirilir.
+  it('kullanıcı bildirimleri uygulama içinden KAPATTIYSA: uyarır ve Ayarlar sekmesine yönlendirir; token yeniden kaydedilmez, izin istenmez', async () => {
+    await AsyncStorage.setItem('notificationsOptOut', '1');
+    getPermissions.mockResolvedValue({ status: 'granted' } as any);
+
+    await launchApp();
+
+    expect(await screen.findByText('Bildirimler kapalı')).toBeTruthy();
+    await comeBackToApp();
+    expect(backend.callsTo('POST /devices')).toHaveLength(0);
+    expect(Notifications.getExpoPushTokenAsync).not.toHaveBeenCalled();
+    expect(requestPermissions).not.toHaveBeenCalled();
+
+    fireEvent.press(screen.getByText('Ayarlara Git'));
+
+    expect(await screen.findByText('HESAP AYARLARI')).toBeTruthy();
+    expect(await screen.findByText('Kapalı')).toBeTruthy();
+    expect(screen.getByLabelText('Bildirim Ayarları').props.value).toBe(false);
+  });
+
+  it('kapatmış kullanıcıya, işletim sistemi izni de kapalıysa TEK uyarı gösterilir', async () => {
+    await AsyncStorage.setItem('notificationsOptOut', '1');
+    // beforeEach: getPermissions -> denied, canAskAgain=false
+
+    await launchApp();
+
+    expect(await screen.findAllByText('Bildirimler kapalı')).toHaveLength(1);
+  });
+
+  it('kapatmış kullanıcı simülatördeyse (açılabilecek bir şey yok) uyarı gösterilmez', async () => {
+    await AsyncStorage.setItem('notificationsOptOut', '1');
+    (Device as any).isDevice = false;
+
+    await launchApp();
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+  });
+
+  it('uçtan uca: uyarı → Ayarlar sekmesi → anahtar → cihaz ayarları → izin verip dönünce token HEMEN kaydedilir ve anahtar "Açık" olur', async () => {
+    await launchApp();
+    fireEvent.press(await screen.findByText('Ayarlara Git'));
+    await screen.findByText('Kapalı — cihaz ayarlarından aç');
+
+    // İzin OS düzeyinde reddedilmiş: anahtarı çevirince cihaz ayarlarına yönlendiren ikinci diyalog çıkar.
+    await fireEventAsync.press(notificationRow());
+    fireEvent.press(await screen.findByText('Ayarları Aç'));
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    expect(backend.callsTo('POST /devices')).toHaveLength(0);
+
+    getPermissions.mockResolvedValue({ status: 'granted' } as any); // kullanıcı cihaz ayarlarından açtı
+    await comeBackToApp();
+
+    await waitFor(() => expect(backend.callsTo('POST /devices')).toHaveLength(1));
+    expect(backend.callsTo('POST /devices')[0].body).toMatchObject({ expoPushToken: 'ExponentPushToken[test]' });
+    // Ayarlar ekranı da ön plana dönüşte durumu yeniden okur (not: "Açık" Görünüm'deki tema seçeneğiyle de eşleşir).
+    await waitFor(() => expect(screen.getByLabelText('Bildirim Ayarları').props.value).toBe(true));
+    expect(screen.queryByText('Kapalı — cihaz ayarlarından aç')).toBeNull();
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+  });
+
+  it('izni açmadan geri dönerse uyarı BİR DAHA çıkmaz (her ön plana gelişte rahatsız etmez)', async () => {
+    await launchApp();
+    await screen.findByText('Bildirimler kapalı');
+    fireEvent.press(screen.getByText('Şimdi Değil'));
+
+    await comeBackToApp();
+
+    expect(screen.queryByText('Bildirimler kapalı')).toBeNull();
+    expect(backend.callsTo('POST /devices')).toHaveLength(0);
+  });
+
+  it('token zaten kaydedildiyse ön plana her dönüşte yeniden kaydetmez', async () => {
+    getPermissions.mockResolvedValue({ status: 'granted' } as any);
+    await launchApp();
+    await waitFor(() => expect(backend.callsTo('POST /devices')).toHaveLength(1));
+
+    await comeBackToApp();
+    await comeBackToApp();
+
+    expect(backend.callsTo('POST /devices')).toHaveLength(1);
+    expect(Notifications.getExpoPushTokenAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('uygulama kapanırken dinleyici kaldırılır', async () => {
+    await launchApp();
+    await screen.findByText('Bildirimler kapalı');
+
+    await screen.unmountAsync();
+
+    expect(removeListener).toHaveBeenCalled();
   });
 });
 
