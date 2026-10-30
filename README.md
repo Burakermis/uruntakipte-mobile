@@ -40,3 +40,7 @@ Betik, Expo'nun **teslimat makbuzunu** bekler: "✔ Teslim edildi" görürsen FC
 ### Android bildirim ikonu
 
 Android'de bildirim çubuğundaki küçük ikon, **yalnızca alfa kanalı** kullanılan beyaz-şeffaf bir görsel olmalı (renkli ikon düz gri/beyaz kareye dönüşür). `assets/notification-icon.png` (96×96, saf beyaz + şeffaf) marka silüetinden (`icon-images/android-monochrome-432.png`) üretildi ve `app.json` > `expo-notifications` eklentisiyle bağlandı (`color: #0f8a7a` bildirim vurgu rengi). Eklenti `prebuild`/EAS build sırasında ikonu tüm yoğunluklara (24–96 px) böler ve manifeste FCM varsayılanı olarak yazar; **ikonu değiştirirsen Android'i yeniden derlemek gerekir** (JS güncellemesiyle değişmez). iOS bildirim ikonu için uygulama ikonunu kullanır, ayar gerekmez.
+
+## Yayın build'i öncesi yapılandırma koruması
+
+`npm run check:release` (ve EAS'te otomatik `eas-build-post-install` kancası), preview/production build'inde eksik ya da yer tutucu değerleri (API adresi, gizlilik/koşullar URL'leri, RevenueCat anahtarları, Android için `google-services.json`, EAS `projectId`) build BAŞINDA reddeder; aksi halde uygulama sessizce `localhost`'a bağlanıp mağazaya çıkabilirdi. Development build'ler kontrol edilmez. Değerleri `eas.json` > `build` > `<profil>` > `env` altına ya da EAS ortam değişkenlerine girin.
