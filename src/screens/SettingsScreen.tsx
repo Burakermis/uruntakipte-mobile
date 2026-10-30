@@ -21,12 +21,15 @@ import { withAlpha } from '../utils/color';
 import { describeError } from '../utils/errors';
 import { isNotificationsOptedOut, setNotificationsOptedOut } from '../utils/notificationPreference';
 import { retryTransient } from '../utils/retry';
+import { NotificationHistoryScreen } from './NotificationHistoryScreen';
 import { makeStyles } from './SettingsScreen.styles';
 
 interface SettingsScreenProps {
   userId: string;
   onOpenProducts: () => void;
   onOpenPremium: () => void;
+  // Bildirim geçmişinden bir kayda dokunuldu: ilgili ürünün (canonicalUrl) detayı açılır.
+  onOpenProduct: (productUrl: string) => void;
   // Hesap sunucuda silindikten sonra çağrılır: App oturumu sıfırlayıp yeni bir kimlikle başlar.
   onAccountDeleted: () => void;
 }
@@ -60,16 +63,11 @@ const THEME_MODE_ICON: Record<ThemeMode, React.ComponentProps<typeof Icon>['name
 
 const THEME_MODE_ORDER: ThemeMode[] = ['light', 'dark', 'system'];
 
-const PLACEHOLDER_CONTENT: Record<Exclude<SubScreen, 'main'>, {
+const PLACEHOLDER_CONTENT: Record<Exclude<SubScreen, 'main' | 'notifications'>, {
   title: string;
   icon: React.ComponentProps<typeof Icon>['name'];
   subtitle: string;
 }> = {
-  notifications: {
-    title: 'Bildirim Geçmişi',
-    icon: 'history',
-    subtitle: 'Henüz bir bildirim yok. Fiyat düşünce veya stoğa girince burada göreceksin.',
-  },
   privacy: {
     title: 'Gizlilik Politikası',
     icon: 'shield',
@@ -88,7 +86,7 @@ const PLACEHOLDER_CONTENT: Record<Exclude<SubScreen, 'main'>, {
 // Hakkında bölümü değişmedi. Alt sayfalar (bildirim geçmişi, yasal metinler)
 // henüz backend/içerik olmadığı için basit birer "yakında" ekranı; kendi
 // state'i içinde, App.tsx'e yeni route eklemeden yönetiliyor.
-export function SettingsScreen({ userId, onOpenProducts, onOpenPremium, onAccountDeleted }: SettingsScreenProps) {
+export function SettingsScreen({ userId, onOpenProducts, onOpenPremium, onOpenProduct, onAccountDeleted }: SettingsScreenProps) {
   const { colors, mode, setMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [sub, setSub] = useState<SubScreen>('main');
@@ -244,6 +242,15 @@ export function SettingsScreen({ userId, onOpenProducts, onOpenPremium, onAccoun
   async function handleCopyDeviceId() {
     await Clipboard.setStringAsync(userId);
     showAlert('Kopyalandı', 'Cihaz ID panoya kopyalandı.');
+  }
+
+  if (sub === 'notifications') {
+    return (
+      <View style={styles.container}>
+        <NotificationHistoryScreen userId={userId} onClose={() => setSub('main')} onOpenProduct={onOpenProduct} />
+        <BottomTabBar active="settings" onSelect={(tab) => tab === 'products' && onOpenProducts()} />
+      </View>
+    );
   }
 
   if (sub !== 'main') {

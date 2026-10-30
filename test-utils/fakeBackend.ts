@@ -1,6 +1,6 @@
 import { API_BASE_URL, setAuthToken } from '../src/api';
 import { canNotifyOnBackInStock } from '../src/availability';
-import type { ResolvedProduct, TrackedProduct, UserLimits } from '../src/types';
+import type { NotificationItem, ResolvedProduct, TrackedProduct, UserLimits } from '../src/types';
 import { userLimits } from './fixtures';
 
 // Bellekte çalışan sahte backend — `global.fetch`'i değiştirir, böylece
@@ -41,6 +41,7 @@ export interface FakeBackendOptions {
   products?: TrackedProduct[];
   catalog?: ResolvedProduct[];
   limits?: Partial<UserLimits>;
+  notifications?: NotificationItem[];
 }
 
 function respond(status: number, body: unknown): FakeResponse {
@@ -57,6 +58,7 @@ export const tokenFor = (id: string) => `token-${id}`;
 export function createFakeBackend(options: FakeBackendOptions = {}) {
   // Sunucu kimliği KENDİ üretir (POST /auth/register); testler sabit bir kimlik isteyebilir.
   let registrations = 0;
+  let notifications: NotificationItem[] = [...(options.notifications ?? [])];
   const deletedUsers = new Set<string>(); // silinen hesapların kimlikleri: anahtarları artık 401 döner
   const userId = options.userId ?? 'test-device';
   let products: TrackedProduct[] = [...(options.products ?? [])];
@@ -169,11 +171,21 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
     const check = path.match(/^\/products\/(\d+)\/check-now$/);
     if (method === 'POST' && check) return respond(200, { id: Number(check[1]), ok: true });
 
+    // Bildirim geçmişi (backend routes/users.js): liste + kullanıcının kendi temizlemesi.
+    if (/^\/users\/[^/]+\/notifications$/.test(path)) {
+      if (method === 'GET') return respond(200, { items: notifications, retentionDays: 30 });
+      if (method === 'DELETE') {
+        notifications = [];
+        return respond(204, undefined);
+      }
+    }
+
     // Hesap silme: kullanıcının verisi gider, anahtarı geçersiz olur (backend routes/users.js DELETE).
     const delUser = path.match(/^\/users\/([^/]+)$/);
     if (method === 'DELETE' && delUser) {
       deletedUsers.add(delUser[1]);
       products = [];
+      notifications = [];
       return respond(204, undefined);
     }
 

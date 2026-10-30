@@ -37,6 +37,9 @@ interface ProductsScreenProps {
   onAddProduct: () => void;
   onOpenPremium: () => void;
   onOpenSettings: () => void;
+  // Bildirime dokunuldu: bu ürünün (canonicalUrl) detayı liste yüklenince açılır; sonra onOpenUrlHandled çağrılır.
+  openUrl?: string | null;
+  onOpenUrlHandled?: () => void;
 }
 
 type ViewMode = 'list' | 'grid';
@@ -84,6 +87,8 @@ export function ProductsScreen({
   onAddProduct,
   onOpenPremium,
   onOpenSettings,
+  openUrl,
+  onOpenUrlHandled,
 }: ProductsScreenProps) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -114,6 +119,16 @@ export function ProductsScreen({
     if (!detailBase) return null;
     return groups.find((g) => g.canonicalUrl === detailBase.canonicalUrl) ?? { ...detailBase, items: [] };
   }, [detailBase, groups]);
+
+  // Bildirime dokunulduysa (openUrl) liste yüklenince o ürünün detayını aç. Ürün listede yoksa (ör. takipten
+  // çıkarılmış) sessizce yok sayılır; istek her durumda "işlendi" sayılır ki tekrar tetiklenmesin.
+  useEffect(() => {
+    if (!openUrl || loading) return;
+    const group = groups.find((g) => g.canonicalUrl === openUrl);
+    onOpenUrlHandled?.();
+    if (group) void handleOpenDetail(group);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openUrl, loading, groups]);
 
   // '%' genişlik + `gap` kombinasyonu flexbox'ta yuvarlama yüzünden dar
   // ekranlarda taşabiliyor — bunun yerine konteynerin GERÇEK genişliği

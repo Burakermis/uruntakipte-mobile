@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, Text, View } from 'react-native';
+import { Image, Linking, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Card } from '../components/Card';
 import { ColorChip } from '../components/ColorChip';
+import { Icon } from '../components/Icon';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { SectionTitle } from '../components/SectionTitle';
@@ -198,6 +199,19 @@ export function ProductDetailScreen({
     }
   }
 
+  // Ürünü markanın kendi uygulamasında açar. Markaların https ürün bağlantıları evrensel bağlantı (iOS) / uygulama
+  // bağlantısı (Android) olarak tanımlı: marka uygulaması yüklüyse işletim sistemi bağlantıyı doğrudan uygulamada
+  // açar, yüklü değilse tarayıcıda açılır — marka başına özel şema tutmaya gerek yok.
+  async function handleOpenInStore() {
+    const url = group.canonicalUrl;
+    try {
+      if (!/^https?:\/\//i.test(url)) throw new Error('geçersiz bağlantı');
+      await Linking.openURL(url);
+    } catch {
+      showAlert('Ürün açılamadı', 'Ürün sayfası şu an açılamıyor. Biraz sonra tekrar dene.');
+    }
+  }
+
   const first = group.items[0];
   const selectedColor = resolved?.colors.find((c) => c.name === selectedColorName) ?? null;
 
@@ -220,6 +234,20 @@ export function ProductDetailScreen({
               </Text>
             </View>
           </View>
+
+          <Pressable
+            style={[styles.openStoreButton, { marginTop: 16 }]}
+            onPress={handleOpenInStore}
+            accessibilityRole="link"
+            accessibilityLabel={`Ürünü ${getBrandLabel(group.brand)} mağazasında aç`}
+            testID="open-in-store-button"
+          >
+            <Icon name="open_in_new" size={18} color={colors.primary} />
+            <Text style={styles.openStoreText}>Mağazada Aç</Text>
+          </Pressable>
+          <Text style={styles.openStoreHint}>
+            {getBrandLabel(group.brand)} uygulaması yüklüyse ürün orada, değilse tarayıcıda açılır.
+          </Text>
         </Card>
 
         <SectionTitle style={styles.sectionTitle}>Takip Edilen Bedenler</SectionTitle>

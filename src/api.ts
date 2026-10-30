@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import type { ApiError, ResolvedProduct, TrackedProduct, UserLimits } from './types';
+import type { ApiError, NotificationHistory, ResolvedProduct, TrackedProduct, UserLimits } from './types';
 
 const API_PORT = 4000;
 
@@ -209,6 +209,15 @@ export function unregisterDevice(userId: string): Promise<void> {
 // EDİLMEZ (yalnızca Apple/Google yapabilir).
 export function deleteAccount(userId: string): Promise<void> {
   return deleteRequest(`/users/${encodeURIComponent(userId)}`);
+}
+
+// Bildirim geçmişi (en yeniden eskiye). Sunucu kayıtları retentionDays gün sonra otomatik siler.
+export function listNotifications(userId: string): Promise<NotificationHistory> {
+  return getJson<NotificationHistory>(`/users/${encodeURIComponent(userId)}/notifications`);
+}
+
+export function clearNotifications(userId: string): Promise<void> {
+  return deleteRequest(`/users/${encodeURIComponent(userId)}/notifications`);
 }
 
 export function getUserLimits(userId: string): Promise<UserLimits> {

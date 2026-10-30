@@ -8,9 +8,13 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "scheme": "uruntakipte",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.uruntakipte.app"
+      "bundleIdentifier": "com.uruntakipte.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.uruntakipte.app",
@@ -42,6 +46,7 @@
       "expo-font",
       "expo-status-bar",
       "expo-secure-store",
+      "expo-share-intent",
       [
         "expo-notifications",
         {

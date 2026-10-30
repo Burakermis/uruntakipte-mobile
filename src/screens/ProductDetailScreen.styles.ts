@@ -32,6 +32,29 @@ export const makeStyles = (colors: ColorTokens) =>
       gap: 4,
       justifyContent: 'center',
     },
+    // "Mağazada Aç": ikincil (çerçeveli) düğme — ana eylem alttaki "Kaydet" kalır.
+    openStoreButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      paddingVertical: 12,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: colors.primary,
+    },
+    openStoreText: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.primary,
+    },
+    openStoreHint: {
+      fontSize: 12,
+      lineHeight: 16,
+      color: colors.onSurfaceVariant,
+      textAlign: 'center',
+      marginTop: 8,
+    },
     brandTag: {
       fontSize: 10,
       fontWeight: '700',

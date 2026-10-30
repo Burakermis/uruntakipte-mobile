@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as Clipboard from 'expo-clipboard';
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { resolveProduct } from '../api';
@@ -17,16 +17,19 @@ import { makeStyles } from './AddProductUrlScreen.styles';
 interface AddProductUrlScreenProps {
   onClose: () => void;
   onResolved: (product: ResolvedProduct) => void;
+  // Başka bir uygulamadan "Paylaş" ile gelen bağlantı: kutu bununla dolar ve ürün KENDİLİĞİNDEN getirilir
+  // (kullanıcı paylaşmayı bilerek yaptı; panodan yapıştırmanın aksine ayrıca "Ürünü Getir"e basması gerekmez).
+  initialUrl?: string;
 }
 
 // Ürün Ekle akışının İLK adımı: sadece URL alıp çözüyor. Ürün bulununca
 // ProductVariantScreen (kapsayıcı) ikinci adıma — renk/beden seçim
 // ekranına — geçiyor; bu iki adım artık ayrı, kendi başlarına birer ekran
 // (önceden tek, uzun bir kaydırmalı sayfaydı).
-export function AddProductUrlScreen({ onClose, onResolved }: AddProductUrlScreenProps) {
+export function AddProductUrlScreen({ onClose, onResolved, initialUrl }: AddProductUrlScreenProps) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const [url, setUrl] = useState('');
+  const [url, setUrl] = useState(initialUrl ?? '');
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
   // Klavyedeki "Git" tuşuna art arda basmak (düğme pasifken bile) aynı sayfa için birden çok
@@ -54,6 +57,12 @@ export function AddProductUrlScreen({ onClose, onResolved }: AddProductUrlScreen
       setResolving(false);
     }
   }
+
+  // Paylaşımla açıldıysa ilk gösterimde otomatik başlat (inFlight bayrağı çift çalışmayı engeller).
+  useEffect(() => {
+    if (initialUrl) void handleResolve(initialUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handlePaste() {
     const clipboardText = await Clipboard.getStringAsync();

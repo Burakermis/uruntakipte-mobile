@@ -9,7 +9,9 @@ import { act, fireEvent, fireEventAsync, screen, waitFor, within } from '@testin
 import { SettingsScreen } from '../../src/screens/SettingsScreen';
 import { useTheme } from '../../src/theme/ThemeProvider';
 import { installFakeBackend, type FakeBackend } from '../../test-utils/fakeBackend';
+import { ZARA_URL } from '../../test-utils/fixtures';
 import { renderScreen } from '../../test-utils/render';
+import type { NotificationItem } from '../../src/types';
 
 // İşletim sisteminin açık/koyu şeması — testte elle sürülüyor (react-native'in `useColorScheme`
 // dışa aktarımı bu iç modülün default'una bağlı).
@@ -17,7 +19,7 @@ jest.mock('react-native/Libraries/Utilities/useColorScheme', () => ({ __esModule
 const osScheme = jest.mocked(useColorScheme);
 
 const USER = 'cihaz-1234-abcd';
-const callbacks = { onOpenProducts: jest.fn(), onOpenPremium: jest.fn(), onAccountDeleted: jest.fn() };
+const callbacks = { onOpenProducts: jest.fn(), onOpenPremium: jest.fn(), onOpenProduct: jest.fn(), onAccountDeleted: jest.fn() };
 let backend: FakeBackend;
 
 const getPermissions = jest.mocked(Notifications.getPermissionsAsync);
@@ -319,6 +321,121 @@ describe('"Bildirim Ayarları" anahtarı — açma', () => {
   });
 });
 
+describe('bildirim geçmişi', () => {
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+  const entry = (id: number, over: Partial<NotificationItem> = {}): NotificationItem => ({
+    id,
+    type: 'price_drop',
+    title: `Oversize Gömlek fiyatı düştü #${id}`,
+    body: '1299 → 999 TRY',
+    productUrl: ZARA_URL,
+    productName: 'Oversize Gömlek',
+    imageUrl: null,
+    createdAt: ago(2 * 60 * 60 * 1000),
+    ...over,
+  });
+  const openHistory = () => fireEvent.press(screen.getByText('Bildirim Geçmişi'));
+
+  it('kayıtları (en yeni üstte) başlık, gövde ve göreli zamanla listeler; saklama süresini söyler', async () => {
+    backend = installFakeBackend({
+      userId: USER,
+      notifications: [entry(2, { type: 'back_in_stock', title: 'Gömlek stoğa girdi', body: 'Beyaz / M tekrar satışta', createdAt: ago(30_000) }), entry(1)],
+    });
+    await renderSettings();
+
+    openHistory();
+
+    expect(await screen.findByText('Gömlek stoğa girdi')).toBeTruthy();
+    expect(screen.getByText('Beyaz / M tekrar satışta')).toBeTruthy();
+    expect(screen.getByText('Az önce')).toBeTruthy();
+    expect(screen.getByText('Oversize Gömlek fiyatı düştü #1')).toBeTruthy();
+    expect(screen.getByText('2 sa önce')).toBeTruthy();
+    expect(screen.getByText('Bildirim kayıtların 30 gün sonra otomatik silinir.')).toBeTruthy();
+    expect(screen.getAllByTestId('notification-item')).toHaveLength(2);
+  });
+
+  it('boşken açıklayıcı metin gösterir (temizle düğmesi çıkmaz)', async () => {
+    await renderSettings();
+
+    openHistory();
+
+    expect(await screen.findByText(/Henüz bir bildirim yok/)).toBeTruthy();
+    expect(screen.queryByTestId('clear-history-button')).toBeNull();
+  });
+
+  it('bir kayda dokunmak ilgili ürünü açar', async () => {
+    backend = installFakeBackend({ userId: USER, notifications: [entry(1)] });
+    await renderSettings();
+    openHistory();
+
+    fireEvent.press(await screen.findByTestId('notification-item'));
+
+    expect(callbacks.onOpenProduct).toHaveBeenCalledWith(ZARA_URL);
+  });
+
+  it('ürün bağlantısı olmayan kayıt dokunulamaz (çökmez)', async () => {
+    backend = installFakeBackend({ userId: USER, notifications: [entry(1, { productUrl: null })] });
+    await renderSettings();
+    openHistory();
+
+    fireEvent.press(await screen.findByTestId('notification-item'));
+
+    expect(callbacks.onOpenProduct).not.toHaveBeenCalled();
+  });
+
+  it('"Geçmişi Temizle" onay ister; onaylanınca sunucudan siler ve boş durumu gösterir', async () => {
+    backend = installFakeBackend({ userId: USER, notifications: [entry(1), entry(2)] });
+    await renderSettings();
+    openHistory();
+    await screen.findAllByTestId('notification-item');
+
+    fireEvent.press(screen.getByTestId('clear-history-button'));
+    expect(await screen.findByText('Geçmiş temizlensin mi?')).toBeTruthy();
+    expect(backend.callsTo('DELETE /users/*')).toHaveLength(0);
+    await fireEventAsync.press(screen.getByText('Temizle'));
+
+    expect(await screen.findByText(/Henüz bir bildirim yok/)).toBeTruthy();
+    expect(backend.callsTo('DELETE /users/*')[0].path).toBe(`/users/${USER}/notifications`);
+  });
+
+  it('"Vazgeç" hiçbir şeyi silmez', async () => {
+    backend = installFakeBackend({ userId: USER, notifications: [entry(1)] });
+    await renderSettings();
+    openHistory();
+    await screen.findByTestId('notification-item');
+
+    fireEvent.press(screen.getByTestId('clear-history-button'));
+    fireEvent.press(await screen.findByText('Vazgeç'));
+
+    expect(backend.callsTo('DELETE /users/*')).toHaveLength(0);
+    expect(screen.getAllByTestId('notification-item')).toHaveLength(1);
+  });
+
+  it('yüklenemezse (sunucu kapalı) hata ve "Tekrar Dene" gösterir; bağlantı gelince listeler', async () => {
+    backend = installFakeBackend({ userId: USER, notifications: [entry(1)] });
+    backend.networkDown('GET /users/*', { times: 6 }); // limits + geçmiş istekleri ve yeniden denemeler
+    await renderSettings();
+    openHistory();
+
+    expect(await screen.findByTestId('history-retry-button')).toBeTruthy();
+
+    backend = installFakeBackend({ userId: USER, notifications: [entry(1)] });
+    await fireEventAsync.press(screen.getByTestId('history-retry-button'));
+
+    expect(await screen.findByTestId('notification-item')).toBeTruthy();
+  });
+
+  it('geri düğmesi ana Ayarlar\'a döner', async () => {
+    await renderSettings();
+    openHistory();
+    await screen.findByText(/Henüz bir bildirim yok/);
+
+    fireEvent.press(screen.getByTestId('close-button'));
+
+    expect(screen.getByText('HESAP AYARLARI')).toBeTruthy();
+  });
+});
+
 describe('hesabı sil', () => {
   const deleteCalls = () => backend.callsTo('DELETE /users/*');
   const openConfirm = () => fireEvent.press(screen.getByText('Hesabımı ve Verilerimi Sil'));
@@ -478,7 +595,7 @@ describe('hakkında ve alt sayfalar', () => {
     await renderSettings();
 
     fireEvent.press(screen.getByText('Bildirim Geçmişi'));
-    expect(screen.getByText(/Henüz bir bildirim yok/)).toBeTruthy();
+    expect(await screen.findByText(/Henüz bir bildirim yok/)).toBeTruthy();
     expect(screen.queryByText('Hesap Ayarları')).toBeNull();
 
     fireEvent.press(screen.getByTestId('close-button'));

@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, fireEvent, fireEventAsync, screen, waitFor } from '@testing-library/react-native';
-import { StyleSheet } from 'react-native';
+import { Linking, StyleSheet } from 'react-native';
 import { ProductDetailScreen } from '../../src/screens/ProductDetailScreen';
 import { installFakeBackend, type FakeBackend } from '../../test-utils/fakeBackend';
 import { resolvedProduct, trackedProduct, ZARA_URL } from '../../test-utils/fixtures';
@@ -52,6 +52,54 @@ const rowStyle = (label: string) => StyleSheet.flatten(screen.getByText(label).p
 
 beforeEach(() => {
   backend = installFakeBackend({ userId: USER, catalog: [resolvedProduct()], products: [ZARA_S, ZARA_M] });
+});
+
+describe('"Mağazada Aç" (ürünü markanın uygulamasında aç)', () => {
+  const openURL = jest.mocked(Linking.openURL);
+  beforeEach(() => openURL.mockReset().mockResolvedValue(undefined));
+
+  it('düğme ürün kartının altında görünür ve markayı söyler (uygulama yüklüyse orada, değilse tarayıcıda)', async () => {
+    await renderDetail();
+
+    expect(screen.getByText('Mağazada Aç')).toBeTruthy();
+    expect(screen.getByText('Zara uygulaması yüklüyse ürün orada, değilse tarayıcıda açılır.')).toBeTruthy();
+  });
+
+  it('dokununca ürünün kendi bağlantısını işletim sistemine verir (marka uygulaması evrensel bağlantıyla açılır)', async () => {
+    await renderDetail();
+
+    await fireEventAsync.press(screen.getByTestId('open-in-store-button'));
+
+    expect(openURL).toHaveBeenCalledTimes(1);
+    expect(openURL).toHaveBeenCalledWith(ZARA_URL);
+  });
+
+  it('ürün bilgisi yüklenemese bile (loadError) çalışır; taslağı/kaydetmeyi etkilemez', async () => {
+    await renderDetail({ resolved: null, loadError: 'Ürün bilgisi güncellenemedi.' });
+
+    await fireEventAsync.press(screen.getByTestId('open-in-store-button'));
+
+    expect(openURL).toHaveBeenCalledWith(ZARA_URL);
+    expect(isDisabled(saveButton())).toBe(true);
+  });
+
+  it('açılamazsa (ör. işletim sistemi reddetti) hata gösterir, çökmez', async () => {
+    openURL.mockRejectedValue(new Error('açılamadı'));
+    await renderDetail();
+
+    await fireEventAsync.press(screen.getByTestId('open-in-store-button'));
+
+    expect(await screen.findByText('Ürün açılamadı')).toBeTruthy();
+  });
+
+  it('http(s) olmayan bir bağlantıyı HİÇ açmaya çalışmaz (güvenlik)', async () => {
+    await renderDetail({ items: { ...group, canonicalUrl: 'javascript:alert(1)' } });
+
+    await fireEventAsync.press(screen.getByTestId('open-in-store-button'));
+
+    expect(openURL).not.toHaveBeenCalled();
+    expect(await screen.findByText('Ürün açılamadı')).toBeTruthy();
+  });
 });
 
 describe('taslak düzenleme', () => {

@@ -8,6 +8,7 @@ import { AppState, type AppStateStatus, Linking } from 'react-native';
 import { act, fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import App from '../../App';
 import { installFakeBackend, seedSession, tokenFor, type FakeBackend } from '../../test-utils/fakeBackend';
+import { resetShareIntentMock, setShareIntent } from '../../test-utils/shareIntent';
 import { resolvedProduct, trackedProduct, ZARA_URL } from '../../test-utils/fixtures';
 import { setMockDeviceMetrics } from '../../test-utils/safeAreaMock';
 import { DEVICES } from '../../test-utils/devices';
@@ -366,6 +367,140 @@ describe('oturum', () => {
     expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
     expect(JSON.parse((await SecureStore.getItemAsync('session'))!).userId).toBe(backend.userId);
     expect(backend.callsTo('GET /products').at(-1)!.headers.authorization).toBe(`Bearer ${tokenFor(backend.userId)}`);
+  });
+});
+
+describe('paylaşarak ürün ekleme ("Paylaş > ÜrünTakipte")', () => {
+  const resolveCalls = () => backend.callsTo('POST /products/resolve');
+
+  it('uygulama kapalıyken paylaşılan bağlantı ürünü KENDİLİĞİNDEN getirir ve renk/beden seçimini açar', async () => {
+    setShareIntent(ZARA_URL, ZARA_URL);
+    await launchApp();
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(1);
+    expect(resolveCalls()[0].body.url).toBe(ZARA_URL);
+    expect(resetShareIntentMock).toHaveBeenCalled(); // aynı paylaşım tekrar işlenmesin
+    expect(screen.queryByTestId('fetch-product-button')).toBeNull(); // "Ürünü Getir"e basılması gerekmedi
+  });
+
+  it('marka uygulamalarının eklediği ürün adını ayıklar ("Şardonlu bermuda - Zara https://...")', async () => {
+    setShareIntent(`Oversize gömlek - Zara ${ZARA_URL}`);
+    await launchApp();
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()[0].body.url).toBe(ZARA_URL);
+  });
+
+  it('uygulama açıkken gelen paylaşım da ürün ekleme ekranına götürür', async () => {
+    await launchApp();
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+
+    act(() => setShareIntent(ZARA_URL));
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(1);
+  });
+
+  it('oturum henüz gelmemişken (ilk açılış) gelen paylaşım kaybolmaz; oturum gelince işlenir', async () => {
+    const gate = backend.hold('POST /auth/register');
+    setShareIntent(ZARA_URL);
+    await launchApp();
+    await gate.arrival;
+    expect(resolveCalls()).toHaveLength(0);
+
+    await act(async () => gate.release());
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(1);
+  });
+
+  it('bağlantı içermeyen paylaşımda ne yapılacağını söyler, ürün ekleme ekranını AÇMAZ', async () => {
+    setShareIntent('sadece düz bir metin');
+    await launchApp();
+
+    expect(await screen.findByText('Ürün bağlantısı bulunamadı')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(0);
+    expect(screen.queryByTestId('url-input')).toBeNull();
+  });
+
+  it('desteklenmeyen siteden paylaşılırsa hatayı gösterir, bağlantı kutuda kalır ve elle düzeltilebilir', async () => {
+    setShareIntent('https://www.ornek-magaza.com/urun-1');
+    await launchApp();
+
+    expect(await screen.findByTestId('unsupported-site-banner')).toBeTruthy();
+    expect(screen.getByTestId('url-input').props.value).toBe('https://www.ornek-magaza.com/urun-1');
+  });
+
+  it('paylaşımla açılan akışı kapatınca bir sonraki elle ekleme BOŞ kutuyla başlar', async () => {
+    setShareIntent('https://www.ornek-magaza.com/urun-1');
+    await launchApp();
+    await screen.findByTestId('unsupported-site-banner');
+
+    fireEvent.press(screen.getByTestId('close-button'));
+    fireEvent.press(await screen.findByTestId('add-product-button'));
+
+    expect((await screen.findByTestId('url-input')).props.value).toBe('');
+  });
+});
+
+describe('bildirime dokununca ürüne gitme', () => {
+  const tapped = (identifier: string, data: Record<string, unknown>) =>
+    ({ notification: { request: { identifier, content: { data } } } }) as any;
+
+  it('uygulama bildirimle açılınca ilgili ürünün detayını açar', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n1', { url: ZARA_URL, type: 'price_drop' }));
+
+    await launchApp();
+
+    expect(await screen.findByText('Ürün Detayı')).toBeTruthy();
+  });
+
+  it('"stoğa girdi" bildirimine dokununca açılan detayda "Mağazada Aç" ürünü markanın bağlantısıyla açar', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n9', { url: ZARA_URL, type: 'back_in_stock' }));
+    jest.mocked(Linking.openURL).mockReset().mockResolvedValue(undefined);
+    await launchApp();
+    await screen.findByText('Ürün Detayı');
+
+    await fireEventAsync.press(screen.getByTestId('open-in-store-button'));
+
+    expect(Linking.openURL).toHaveBeenCalledWith(ZARA_URL);
+  });
+
+  it('aynı bildirim yanıtı detay kapatılınca TEKRAR işlenmez', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n1', { url: ZARA_URL }));
+    await launchApp();
+    await screen.findByText('Ürün Detayı');
+
+    fireEvent.press(screen.getByTestId('close-button'));
+
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(screen.queryByText('Ürün Detayı')).toBeNull();
+  });
+
+  it('ürün artık takipte değilse (silinmiş) çökmeden listeyi gösterir', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n2', { url: 'https://www.zara.com/baska-urun' }));
+
+    await launchApp();
+
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(screen.queryByText('Ürün Detayı')).toBeNull();
+  });
+
+  it('ürün bağlantısı taşımayan bildirim (ör. eski/başka tür) listeyi bozmaz', async () => {
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n3', {}));
+
+    await launchApp();
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
   });
 });
 

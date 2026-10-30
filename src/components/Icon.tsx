@@ -40,6 +40,7 @@ const SYMBOL_TO_MATERIAL_ICON: Record<string, React.ComponentProps<typeof Materi
   info: 'information-outline',
   fingerprint: 'fingerprint',
   delete_forever: 'delete-outline',
+  open_in_new: 'open-in-new',
   chevron_left: 'chevron-left',
   view_list: 'view-list',
   grid_view: 'view-grid-outline',
