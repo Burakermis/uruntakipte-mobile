@@ -1,12 +1,14 @@
 import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { AppState, type AppStateStatus, Linking } from 'react-native';
 import { act, fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import App from '../../App';
-import { installFakeBackend, type FakeBackend } from '../../test-utils/fakeBackend';
+import { installFakeBackend, seedSession, tokenFor, type FakeBackend } from '../../test-utils/fakeBackend';
+import { resetShareIntentMock, setShareIntent } from '../../test-utils/shareIntent';
 import { resolvedProduct, trackedProduct, ZARA_URL } from '../../test-utils/fixtures';
 import { setMockDeviceMetrics } from '../../test-utils/safeAreaMock';
 import { DEVICES } from '../../test-utils/devices';
@@ -39,8 +41,8 @@ describe('açılış', () => {
     await launchApp();
     await screen.findByText('Henüz ürün eklemediniz');
     const firstUserId = backend.callsTo('GET /products')[0].query.get('userId');
-    expect(firstUserId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await AsyncStorage.getItem('deviceId')).toBe(firstUserId);
+    expect(firstUserId).toBe(backend.userId); // kimliği sunucu üretti
+    expect(JSON.parse((await SecureStore.getItemAsync('session'))!).userId).toBe(firstUserId);
 
     await screen.unmountAsync();
     backend.calls.length = 0;
@@ -48,13 +50,15 @@ describe('açılış', () => {
     await screen.findByText('Henüz ürün eklemediniz');
 
     expect(backend.callsTo('GET /products')[0].query.get('userId')).toBe(firstUserId);
+    expect(backend.registrations).toBe(1); // ikinci açılışta yeniden kayıt YOK
+    expect(backend.callsTo('GET /products')[0].headers.authorization).toBe(`Bearer ${tokenFor(firstUserId!)}`);
   });
 
   it('bildirim izni verilmişse token\'ı, Profil ekranına hiç girmeden, cihaz kimliğiyle backend\'e kaydeder', async () => {
     await launchApp();
 
     await waitFor(() => expect(backend.callsTo('POST /devices')).toHaveLength(1));
-    const deviceId = (await AsyncStorage.getItem('deviceId'))!;
+    const deviceId = JSON.parse((await SecureStore.getItemAsync('session'))!).userId;
     expect(backend.callsTo('POST /devices')[0].body).toEqual({
       userId: deviceId,
       expoPushToken: 'ExponentPushToken[test]',
@@ -85,11 +89,11 @@ describe('açılış', () => {
   });
 
   it('kalıcı depo okunamasa bile açılış ekranında takılmaz, uygulama açılır', async () => {
-    // Yalnızca cihaz kimliği okuması düşüyor (mock jest.fn: özgün gerçekleme sonunda geri konuyor)
-    const getItem = jest.mocked(AsyncStorage.getItem);
+    // Yalnızca oturum okuması düşüyor (mock jest.fn: özgün gerçekleme sonunda geri konuyor)
+    const getItem = jest.mocked(SecureStore.getItemAsync);
     const original = getItem.getMockImplementation()!;
     getItem.mockImplementation(async (key: string) => {
-      if (key === 'deviceId') throw new Error('disk hatası');
+      if (key === 'session') throw new Error('keychain hatası');
       return original(key);
     });
     try {
@@ -341,9 +345,192 @@ describe('ürün ekleme akışı (uçtan uca)', () => {
   });
 });
 
+describe('oturum', () => {
+  it('ilk açılışta sunucuya ulaşılamazsa "Tekrar Dene" gösterir; bağlantı gelince uygulama açılır', async () => {
+    backend.networkDown('POST /auth/register');
+    await launchApp();
+
+    expect(await screen.findByText('Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.')).toBeTruthy();
+    expect(backend.callsTo('GET /products')).toHaveLength(0);
+
+    await fireEventAsync.press(screen.getByTestId('session-retry-button'));
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(backend.registrations).toBe(1);
+  });
+
+  it('sunucu kayıtlı token’ı reddederse (401) oturum silinip yenisi alınır ve liste yeni kimlikle yüklenir', async () => {
+    await SecureStore.setItemAsync('session', JSON.stringify({ userId: 'eski', token: 'gecersiz-token' }));
+    await launchApp();
+
+    await waitFor(() => expect(backend.registrations).toBe(1));
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(JSON.parse((await SecureStore.getItemAsync('session'))!).userId).toBe(backend.userId);
+    expect(backend.callsTo('GET /products').at(-1)!.headers.authorization).toBe(`Bearer ${tokenFor(backend.userId)}`);
+  });
+});
+
+describe('paylaşarak ürün ekleme ("Paylaş > ÜrünTakipte")', () => {
+  const resolveCalls = () => backend.callsTo('POST /products/resolve');
+
+  it('uygulama kapalıyken paylaşılan bağlantı ürünü KENDİLİĞİNDEN getirir ve renk/beden seçimini açar', async () => {
+    setShareIntent(ZARA_URL, ZARA_URL);
+    await launchApp();
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(1);
+    expect(resolveCalls()[0].body.url).toBe(ZARA_URL);
+    expect(resetShareIntentMock).toHaveBeenCalled(); // aynı paylaşım tekrar işlenmesin
+    expect(screen.queryByTestId('fetch-product-button')).toBeNull(); // "Ürünü Getir"e basılması gerekmedi
+  });
+
+  it('marka uygulamalarının eklediği ürün adını ayıklar ("Şardonlu bermuda - Zara https://...")', async () => {
+    setShareIntent(`Oversize gömlek - Zara ${ZARA_URL}`);
+    await launchApp();
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()[0].body.url).toBe(ZARA_URL);
+  });
+
+  it('uygulama açıkken gelen paylaşım da ürün ekleme ekranına götürür', async () => {
+    await launchApp();
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+
+    act(() => setShareIntent(ZARA_URL));
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(1);
+  });
+
+  it('oturum henüz gelmemişken (ilk açılış) gelen paylaşım kaybolmaz; oturum gelince işlenir', async () => {
+    const gate = backend.hold('POST /auth/register');
+    setShareIntent(ZARA_URL);
+    await launchApp();
+    await gate.arrival;
+    expect(resolveCalls()).toHaveLength(0);
+
+    await act(async () => gate.release());
+
+    expect(await screen.findByText('Oversize Gömlek')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(1);
+  });
+
+  it('bağlantı içermeyen paylaşımda ne yapılacağını söyler, ürün ekleme ekranını AÇMAZ', async () => {
+    setShareIntent('sadece düz bir metin');
+    await launchApp();
+
+    expect(await screen.findByText('Ürün bağlantısı bulunamadı')).toBeTruthy();
+    expect(resolveCalls()).toHaveLength(0);
+    expect(screen.queryByTestId('url-input')).toBeNull();
+  });
+
+  it('desteklenmeyen siteden paylaşılırsa hatayı gösterir, bağlantı kutuda kalır ve elle düzeltilebilir', async () => {
+    setShareIntent('https://www.ornek-magaza.com/urun-1');
+    await launchApp();
+
+    expect(await screen.findByTestId('unsupported-site-banner')).toBeTruthy();
+    expect(screen.getByTestId('url-input').props.value).toBe('https://www.ornek-magaza.com/urun-1');
+  });
+
+  it('paylaşımla açılan akışı kapatınca bir sonraki elle ekleme BOŞ kutuyla başlar', async () => {
+    setShareIntent('https://www.ornek-magaza.com/urun-1');
+    await launchApp();
+    await screen.findByTestId('unsupported-site-banner');
+
+    fireEvent.press(screen.getByTestId('close-button'));
+    fireEvent.press(await screen.findByTestId('add-product-button'));
+
+    expect((await screen.findByTestId('url-input')).props.value).toBe('');
+  });
+});
+
+describe('bildirime dokununca ürüne gitme', () => {
+  const tapped = (identifier: string, data: Record<string, unknown>) =>
+    ({ notification: { request: { identifier, content: { data } } } }) as any;
+
+  it('uygulama bildirimle açılınca ilgili ürünün detayını açar', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n1', { url: ZARA_URL, type: 'price_drop' }));
+
+    await launchApp();
+
+    expect(await screen.findByText('Ürün Detayı')).toBeTruthy();
+  });
+
+  it('"stoğa girdi" bildirimine dokununca açılan detayda "Mağazada Aç" ürünü markanın bağlantısıyla açar', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n9', { url: ZARA_URL, type: 'back_in_stock' }));
+    jest.mocked(Linking.openURL).mockReset().mockResolvedValue(undefined);
+    await launchApp();
+    await screen.findByText('Ürün Detayı');
+
+    await fireEventAsync.press(screen.getByTestId('open-in-store-button'));
+
+    expect(Linking.openURL).toHaveBeenCalledWith(ZARA_URL);
+  });
+
+  it('aynı bildirim yanıtı detay kapatılınca TEKRAR işlenmez', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n1', { url: ZARA_URL }));
+    await launchApp();
+    await screen.findByText('Ürün Detayı');
+
+    fireEvent.press(screen.getByTestId('close-button'));
+
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(screen.queryByText('Ürün Detayı')).toBeNull();
+  });
+
+  it('ürün artık takipte değilse (silinmiş) çökmeden listeyi gösterir', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1 })] });
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n2', { url: 'https://www.zara.com/baska-urun' }));
+
+    await launchApp();
+
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(screen.queryByText('Ürün Detayı')).toBeNull();
+  });
+
+  it('ürün bağlantısı taşımayan bildirim (ör. eski/başka tür) listeyi bozmaz', async () => {
+    jest.mocked(Notifications.useLastNotificationResponse).mockReturnValue(tapped('n3', {}));
+
+    await launchApp();
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+  });
+});
+
+describe('hesap silme (uçtan uca)', () => {
+  it('Ayarlar\'dan hesap silinince veri gider, eski anahtar ölür ve uygulama YENİ kimlikle sıfırdan açılır', async () => {
+    await seedSession('test-device');
+    backend = installFakeBackend({ userId: 'test-device', products: [trackedProduct({ id: 1 })] });
+    await launchApp();
+    await waitFor(() => expect(cards()).toHaveLength(1));
+
+    fireEvent.press(screen.getByText('Ayarlar'));
+    fireEvent.press(await screen.findByText('Hesabımı ve Verilerimi Sil'));
+    await fireEventAsync.press(await screen.findByText('Hesabımı Sil'));
+
+    // Sunucuda silindi; eski kimlik artık reddediliyor
+    expect(backend.deletedUsers.has('test-device')).toBe(true);
+    // Uygulama Ürünlerim'e döner ve sıfırdan, YENİ kimlikle açılır (liste boş)
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(backend.registrations).toBe(1);
+    const session = JSON.parse((await SecureStore.getItemAsync('session'))!);
+    expect(session.userId).not.toBe('test-device');
+    const lastList = backend.callsTo('GET /products').at(-1)!;
+    expect(lastList.query.get('userId')).toBe(session.userId);
+    expect(lastList.headers.authorization).toBe(`Bearer ${tokenFor(session.userId)}`);
+  });
+});
+
 describe('ücretsiz limit → Premium → ekleme (uçtan uca)', () => {
   it('limit dolunca Premium\'a yönlendirir; premium olunca aynı kullanıcı yeni ürün ekleyebilir', async () => {
-    await AsyncStorage.setItem('deviceId', 'test-device');
+    await seedSession('test-device');
     backend = installFakeBackend({
       catalog: [resolvedProduct()],
       products: [1, 2, 3].map((i) =>
@@ -379,7 +566,7 @@ describe('ücretsiz limit → Premium → ekleme (uçtan uca)', () => {
 
 describe('sekmeler', () => {
   it('Ürünlerim ↔ Ayarlar arasında gidip gelir; veri korunur', async () => {
-    await AsyncStorage.setItem('deviceId', 'test-device');
+    await seedSession('test-device');
     backend = installFakeBackend({ products: [trackedProduct({ id: 1 })] });
     await launchApp();
     await waitFor(() => expect(cards()).toHaveLength(1));
@@ -393,7 +580,7 @@ describe('sekmeler', () => {
   });
 
   it('ürün detayındaki "kaydedilmemiş değişiklik" onayı, kökteki tek DialogHost üzerinden açılır', async () => {
-    await AsyncStorage.setItem('deviceId', 'test-device');
+    await seedSession('test-device');
     backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1, sku: 'beyaz:sku-s', size: 'S' })] });
     await launchApp();
     await waitFor(() => expect(cards()).toHaveLength(1));

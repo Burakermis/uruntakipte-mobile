@@ -32,6 +32,16 @@ jest.mock('react-native-purchases', () => ({
   },
 }));
 
+// Paylaşım (başka uygulamadan "Paylaş" ile gelen bağlantı): native modül yok, test sahtesi (bkz. test-utils/shareIntent.ts).
+jest.mock('expo-share-intent', () => {
+  const fake = require('./test-utils/shareIntent');
+  return {
+    __esModule: true,
+    ShareIntentProvider: ({ children }: { children: React.ReactNode }) => children,
+    useShareIntentContext: fake.useShareIntentContext,
+  };
+});
+
 jest.mock('expo-clipboard', () => ({
   __esModule: true,
   getStringAsync: jest.fn(),
@@ -44,6 +54,8 @@ jest.mock('expo-notifications', () => ({
   getPermissionsAsync: jest.fn(),
   requestPermissionsAsync: jest.fn(),
   getExpoPushTokenAsync: jest.fn(),
+  // Bildirime dokunma (soğuk/sıcak açılış): testler `mockReturnValue` ile son yanıtı sürer.
+  useLastNotificationResponse: jest.fn(() => undefined),
   setNotificationChannelAsync: jest.fn(),
   AndroidImportance: { DEFAULT: 3, HIGH: 4, MAX: 5 },
 }));
@@ -66,7 +78,27 @@ jest.mock('expo-crypto', () => {
   };
 });
 
+// Güvenli depo (Keychain/Keystore): bellekte çalışan sahte; testler arasında beforeEach'te boşaltılır.
+jest.mock('expo-secure-store', () => {
+  const store = new Map<string, string>();
+  return {
+    __esModule: true,
+    __store: store,
+    isAvailableAsync: jest.fn(async () => true),
+    getItemAsync: jest.fn(async (key: string) => store.get(key) ?? null),
+    setItemAsync: jest.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    }),
+    deleteItemAsync: jest.fn(async (key: string) => {
+      store.delete(key);
+    }),
+  };
+});
+
 beforeEach(async () => {
+  require('expo-secure-store').__store.clear();
+  require('./test-utils/shareIntent').clearShareIntentMock();
+  require('expo-notifications').useLastNotificationResponse.mockReset().mockReturnValue(undefined);
   const Clipboard = require('expo-clipboard');
   const Notifications = require('expo-notifications');
   const Device = require('expo-device');

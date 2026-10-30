@@ -20,6 +20,21 @@ export function formatRelativeTime(iso: string): string {
   return `${days}g önce`;
 }
 
+// "Az önce", "5 dk önce", "3 sa önce", "2 gün önce"; bir haftadan eskiyse tarih. Bildirim geçmişinde kullanılır
+// (yukarıdaki formatRelativeTime kısa mockup biçimidir: "2s önce").
+export function formatNotificationTime(iso: string, now: number = Date.now()): string {
+  const diff = now - new Date(iso).getTime();
+  if (Number.isNaN(diff)) return '';
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'Az önce';
+  if (minutes < 60) return `${minutes} dk önce`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} sa önce`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} gün önce`;
+  return new Date(iso).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' });
+}
+
 // "18 saat", "2 gün 4 saat" gibi bir süreyi okunur hâle getirir — ücretsiz
 // plan bekleme süresi rozetinde kullanılıyor (bkz. ProductsScreen).
 export function formatDuration(ms: number): string {

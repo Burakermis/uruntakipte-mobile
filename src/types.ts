@@ -40,6 +40,24 @@ export interface UserLimits {
   cooldownRemainingMs: number;
 }
 
+// Bildirim geçmişi kaydı (bkz. backend/store/notificationStore.js). Sunucu kayıtları kısa süre sonra siler.
+export interface NotificationItem {
+  id: number;
+  // tracking_failed: ürün sayfası uzun süredir taranamıyor (kaldırılmış / değişmiş olabilir)
+  type: 'price_drop' | 'back_in_stock' | 'tracking_failed';
+  title: string;
+  body: string;
+  productUrl: string | null;
+  productName: string | null;
+  imageUrl: string | null;
+  createdAt: string;
+}
+
+export interface NotificationHistory {
+  items: NotificationItem[];
+  retentionDays: number;
+}
+
 export interface TrackedProduct {
   id: number;
   userId: string;

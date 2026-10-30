@@ -1,14 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, AppState, Platform, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, Platform, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { registerDevice } from './src/api';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
+import * as Notifications from 'expo-notifications';
+import { ShareIntentProvider, useShareIntentContext } from 'expo-share-intent';
+import { CONNECTION_MESSAGE, registerDevice, setAuthToken, setUnauthorizedHandler } from './src/api';
+import { PrimaryButton } from './src/components/PrimaryButton';
 import { DialogHost } from './src/dialog/DialogHost';
+import { showAlert } from './src/dialog/dialogStore';
 import { pushUnsupportedReason, registerForPushNotificationsAsync, showNotificationsOffAtLaunchAlert } from './src/notifications';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
-import { getOrCreateDeviceId } from './src/utils/deviceId';
+import { clearSession, getOrCreateSession, type Session } from './src/utils/session';
 import { isNotificationsOptedOut } from './src/utils/notificationPreference';
+import { initMonitoring } from './src/monitoring';
 import { retryTransient } from './src/utils/retry';
+import { urlFromShare } from './src/utils/sharedUrl';
 import { configurePurchases } from './src/purchases';
 import { PremiumScreen } from './src/screens/PremiumScreen';
 import { ProductVariantScreen } from './src/screens/ProductVariantScreen';
@@ -21,18 +28,28 @@ import { SettingsScreen } from './src/screens/SettingsScreen';
 // "settings" artık Profil'le birleşti — kendi başına kök sekme (bkz. BottomTabBar).
 type ScreenName = 'products' | 'add' | 'premium' | 'settings';
 
+// Çökme/hata izleme: EXPO_PUBLIC_SENTRY_DSN yoksa ya da geliştirme modunda hiçbir şey yapmaz (bkz. src/monitoring.ts).
+initMonitoring();
+
+// "Paylaş > ÜrünTakipte" web'de ve Expo Go'da çalışmaz (native modül yok): oralarda devre dışı.
+const SHARE_INTENT_DISABLED =
+  Platform.OS === 'web' || Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+
 export default function App() {
   // useTheme() bir Provider içinde çalışmalı — asıl uygulama gövdesi
   // (AppContent) bu yüzden ayrı bir bileşene taşındı. SafeAreaProvider en
   // dışta: Header/BottomTabBar gibi paylaşılan bileşenler useSafeAreaInsets()
   // ile çentik/Dynamic Island/home indicator boşluğunu buradan okuyor —
   // cihaza özel bir sabit değer yazmıyoruz, her cihazda otomatik doğru.
+  // ShareIntentProvider en dışta olmalı (kütüphane şartı): paylaşım soğuk açılışta da bu bağlamdan okunur.
   return (
-    <SafeAreaProvider>
-      <ThemeProvider>
-        <AppContent />
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <ShareIntentProvider options={{ disabled: SHARE_INTENT_DISABLED, resetOnBackground: true }}>
+      <SafeAreaProvider>
+        <ThemeProvider>
+          <AppContent />
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </ShareIntentProvider>
   );
 }
 
@@ -40,16 +57,91 @@ function AppContent() {
   const { colors, resolvedScheme } = useTheme();
   const [screen, setScreen] = useState<ScreenName>('products');
   const [refreshToken, setRefreshToken] = useState(0);
-  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionFailed, setSessionFailed] = useState(false);
+  const deviceId = session?.userId ?? null;
+  // Paylaşımla gelen ürün bağlantısı ("Ürün Ekle" ekranı bununla otomatik başlar) ve bildirime
+  // dokunulunca açılacak ürün (canonicalUrl). Oturum henüz gelmediyse ikisi de bekler, oturum gelince işlenir.
+  const [sharedUrl, setSharedUrl] = useState<string | null>(null);
+  const [openProductUrl, setOpenProductUrl] = useState<string | null>(null);
 
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
   useEffect(() => {
-    getOrCreateDeviceId().then((id) => {
-      setDeviceId(id);
+    if (!hasShareIntent) return;
+    const url = urlFromShare(shareIntent);
+    resetShareIntent();
+    if (url) {
+      setSharedUrl(url);
+      setScreen('add');
+    } else {
+      showAlert(
+        'Ürün bağlantısı bulunamadı',
+        "Paylaştığın içerikte bir bağlantı yok. Mağaza uygulamasında ürün sayfasından “Paylaş”ı seçip ÜrünTakipte'yi seç."
+      );
+    }
+  }, [hasShareIntent, shareIntent, resetShareIntent]);
+
+  // Bildirime dokunma (uygulama kapalıyken de açıkken de): payload'daki ürün bağlantısını (data.url,
+  // bkz. backend/checker.js) ürün detayında aç. Aynı yanıt iki kez işlenmez.
+  const lastNotificationResponse = Notifications.useLastNotificationResponse();
+  const handledResponseId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!lastNotificationResponse) return;
+    const id = lastNotificationResponse.notification.request.identifier;
+    if (handledResponseId.current === id) return;
+    handledResponseId.current = id;
+    const url = lastNotificationResponse.notification.request.content.data?.url;
+    if (typeof url === 'string' && url) {
+      setOpenProductUrl(url);
+      setScreen('products');
+    }
+  }, [lastNotificationResponse]);
+
+  // Oturum (sunucunun verdiği userId + token, bkz. utils/session.ts). İlk açılışta kayıt
+  // için internet gerekir; ulaşılamazsa "Tekrar dene" gösterilir.
+  const startSession = useCallback(async () => {
+    setSessionFailed(false);
+    try {
+      const next = await getOrCreateSession();
+      setAuthToken(next.token);
+      setSession(next);
       // RevenueCat API key tanımlı değilse (bkz. src/purchases.ts) no-op —
       // web preview/hesap kurulmadan önce güvenle çağrılabilir.
-      configurePurchases(id);
-    });
+      configurePurchases(next.userId);
+    } catch {
+      setSessionFailed(true);
+    }
   }, []);
+
+  useEffect(() => {
+    startSession();
+  }, [startSession]);
+
+  // Kayıtlı oturumu siler ve yenisini alır. İki durumda çağrılır: sunucu token'ı reddettiğinde (401) ve
+  // kullanıcı hesabını sildiğinde. Eşzamanlı çağrılar tek yenilemeye indirgenir (ör. silmeden hemen sonra
+  // uçuştaki bir isteğin 401'i).
+  const renewing = useRef(false);
+  const renewSession = useCallback(() => {
+    if (renewing.current) return;
+    renewing.current = true;
+    setAuthToken(null);
+    setSession(null); // eski kimlikle ekran yenilemesi olmasın; kimlik gelene kadar yükleniyor gösterilir
+    clearSession()
+      .then(startSession)
+      .finally(() => {
+        renewing.current = false;
+      });
+  }, [startSession]);
+
+  useEffect(() => {
+    setUnauthorizedHandler(renewSession);
+    return () => setUnauthorizedHandler(null);
+  }, [renewSession]);
+
+  const handleAccountDeleted = useCallback(() => {
+    setScreen('products');
+    renewSession();
+  }, [renewSession]);
 
   useEffect(() => {
     if (!deviceId) return;
@@ -110,11 +202,17 @@ function AppContent() {
   }, [deviceId]);
 
   if (!deviceId) {
-    // AsyncStorage okuması asenkron — cihaz kimliği gelene kadar hiçbir
-    // ekran userId olmadan render edilemez.
+    // Oturum gelene kadar hiçbir ekran userId olmadan render edilemez.
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator color={colors.primary} />
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background, padding: 32 }}>
+        {sessionFailed ? (
+          <>
+            <Text style={{ color: colors.onBackground, textAlign: 'center', marginBottom: 16 }}>{CONNECTION_MESSAGE}</Text>
+            <PrimaryButton title="Tekrar Dene" onPress={startSession} testID="session-retry-button" />
+          </>
+        ) : (
+          <ActivityIndicator color={colors.primary} />
+        )}
       </View>
     );
   }
@@ -124,9 +222,15 @@ function AppContent() {
   if (screen === 'add') {
     content = (
       <ProductVariantScreen
+        key={sharedUrl ?? 'manual'}
         userId={deviceId}
-        onClose={() => setScreen('products')}
+        initialUrl={sharedUrl ?? undefined}
+        onClose={() => {
+          setSharedUrl(null);
+          setScreen('products');
+        }}
         onTracked={() => {
+          setSharedUrl(null);
           setRefreshToken((t) => t + 1);
           setScreen('products');
         }}
@@ -147,6 +251,11 @@ function AppContent() {
         userId={deviceId}
         onOpenProducts={() => setScreen('products')}
         onOpenPremium={() => setScreen('premium')}
+        onOpenProduct={(url) => {
+          setOpenProductUrl(url);
+          setScreen('products');
+        }}
+        onAccountDeleted={handleAccountDeleted}
       />
     );
   } else {
@@ -154,7 +263,12 @@ function AppContent() {
       <ProductsScreen
         userId={deviceId}
         refreshToken={refreshToken}
-        onAddProduct={() => setScreen('add')}
+        openUrl={openProductUrl}
+        onOpenUrlHandled={() => setOpenProductUrl(null)}
+        onAddProduct={() => {
+          setSharedUrl(null);
+          setScreen('add');
+        }}
         onOpenPremium={() => setScreen('premium')}
         onOpenSettings={() => setScreen('settings')}
       />

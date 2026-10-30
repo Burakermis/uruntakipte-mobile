@@ -24,6 +24,8 @@ interface ProductVariantScreenProps {
   userId: string;
   onClose: () => void;
   onTracked: () => void;
+  // Paylaşımla gelen ürün bağlantısı (bkz. AddProductUrlScreen initialUrl).
+  initialUrl?: string;
 }
 
 // Ürün Ekle akışı iki AYRI ekrandan oluşuyor: (1) URL girme (bkz.
@@ -33,7 +35,7 @@ interface ProductVariantScreenProps {
 // Bu, App.tsx'teki "gerçek navigasyon yerine yerel state ile ekran değiştirme"
 // deseniyle birebir aynı (bkz. App.tsx'in üstündeki yorum) — burada da ayrı
 // bir navigator kurmadan aynı fikir bir seviye aşağıda tekrarlanıyor.
-export function ProductVariantScreen({ userId, onClose, onTracked }: ProductVariantScreenProps) {
+export function ProductVariantScreen({ userId, onClose, onTracked, initialUrl }: ProductVariantScreenProps) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
@@ -174,7 +176,7 @@ export function ProductVariantScreen({ userId, onClose, onTracked }: ProductVari
     selectedSkus.size > 1 ? `${selectedSkus.size} Bedeni Takibe Al` : 'Takibe Al';
 
   if (!product) {
-    return <AddProductUrlScreen onClose={onClose} onResolved={handleResolved} />;
+    return <AddProductUrlScreen onClose={onClose} onResolved={handleResolved} initialUrl={initialUrl} />;
   }
 
   return (
