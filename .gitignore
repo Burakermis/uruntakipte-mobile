@@ -44,3 +44,8 @@ yarn-error.*
 
 # Jest coverage
 coverage/
+
+# Firebase service account özel anahtarı (FCM V1): YALNIZCA EAS'e yüklenir, depoya ASLA girmez.
+# (google-services.json ise yalnızca genel kimlikler içerir ve depoda durması gerekir.)
+*-firebase-adminsdk-*.json
+service-account*.json
