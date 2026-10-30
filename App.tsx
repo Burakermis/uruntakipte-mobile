@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, AppState, Platform, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, AppState, Platform, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { registerDevice } from './src/api';
+import { CONNECTION_MESSAGE, registerDevice, setAuthToken, setUnauthorizedHandler } from './src/api';
+import { PrimaryButton } from './src/components/PrimaryButton';
 import { DialogHost } from './src/dialog/DialogHost';
 import { pushUnsupportedReason, registerForPushNotificationsAsync, showNotificationsOffAtLaunchAlert } from './src/notifications';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
-import { getOrCreateDeviceId } from './src/utils/deviceId';
+import { clearSession, getOrCreateSession, type Session } from './src/utils/session';
 import { isNotificationsOptedOut } from './src/utils/notificationPreference';
 import { retryTransient } from './src/utils/retry';
 import { configurePurchases } from './src/purchases';
@@ -40,16 +41,45 @@ function AppContent() {
   const { colors, resolvedScheme } = useTheme();
   const [screen, setScreen] = useState<ScreenName>('products');
   const [refreshToken, setRefreshToken] = useState(0);
-  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionFailed, setSessionFailed] = useState(false);
+  const deviceId = session?.userId ?? null;
 
-  useEffect(() => {
-    getOrCreateDeviceId().then((id) => {
-      setDeviceId(id);
+  // Oturum (sunucunun verdiği userId + token, bkz. utils/session.ts). İlk açılışta kayıt
+  // için internet gerekir; ulaşılamazsa "Tekrar dene" gösterilir.
+  const startSession = useCallback(async () => {
+    setSessionFailed(false);
+    try {
+      const next = await getOrCreateSession();
+      setAuthToken(next.token);
+      setSession(next);
       // RevenueCat API key tanımlı değilse (bkz. src/purchases.ts) no-op —
       // web preview/hesap kurulmadan önce güvenle çağrılabilir.
-      configurePurchases(id);
-    });
+      configurePurchases(next.userId);
+    } catch {
+      setSessionFailed(true);
+    }
   }, []);
+
+  useEffect(() => {
+    startSession();
+  }, [startSession]);
+
+  // Sunucu token'ı reddederse (401) kayıtlı oturum silinip yenisi alınır.
+  useEffect(() => {
+    let renewing = false;
+    setUnauthorizedHandler(() => {
+      if (renewing) return;
+      renewing = true;
+      setAuthToken(null);
+      clearSession()
+        .then(startSession)
+        .finally(() => {
+          renewing = false;
+        });
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [startSession]);
 
   useEffect(() => {
     if (!deviceId) return;
@@ -110,11 +140,17 @@ function AppContent() {
   }, [deviceId]);
 
   if (!deviceId) {
-    // AsyncStorage okuması asenkron — cihaz kimliği gelene kadar hiçbir
-    // ekran userId olmadan render edilemez.
+    // Oturum gelene kadar hiçbir ekran userId olmadan render edilemez.
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator color={colors.primary} />
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background, padding: 32 }}>
+        {sessionFailed ? (
+          <>
+            <Text style={{ color: colors.onBackground, textAlign: 'center', marginBottom: 16 }}>{CONNECTION_MESSAGE}</Text>
+            <PrimaryButton title="Tekrar Dene" onPress={startSession} testID="session-retry-button" />
+          </>
+        ) : (
+          <ActivityIndicator color={colors.primary} />
+        )}
       </View>
     );
   }

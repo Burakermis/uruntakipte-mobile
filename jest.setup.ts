@@ -66,7 +66,25 @@ jest.mock('expo-crypto', () => {
   };
 });
 
+// Güvenli depo (Keychain/Keystore): bellekte çalışan sahte; testler arasında beforeEach'te boşaltılır.
+jest.mock('expo-secure-store', () => {
+  const store = new Map<string, string>();
+  return {
+    __esModule: true,
+    __store: store,
+    isAvailableAsync: jest.fn(async () => true),
+    getItemAsync: jest.fn(async (key: string) => store.get(key) ?? null),
+    setItemAsync: jest.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    }),
+    deleteItemAsync: jest.fn(async (key: string) => {
+      store.delete(key);
+    }),
+  };
+});
+
 beforeEach(async () => {
+  require('expo-secure-store').__store.clear();
   const Clipboard = require('expo-clipboard');
   const Notifications = require('expo-notifications');
   const Device = require('expo-device');

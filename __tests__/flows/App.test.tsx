@@ -1,12 +1,13 @@
 import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { AppState, type AppStateStatus, Linking } from 'react-native';
 import { act, fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import App from '../../App';
-import { installFakeBackend, type FakeBackend } from '../../test-utils/fakeBackend';
+import { installFakeBackend, seedSession, tokenFor, type FakeBackend } from '../../test-utils/fakeBackend';
 import { resolvedProduct, trackedProduct, ZARA_URL } from '../../test-utils/fixtures';
 import { setMockDeviceMetrics } from '../../test-utils/safeAreaMock';
 import { DEVICES } from '../../test-utils/devices';
@@ -39,8 +40,8 @@ describe('açılış', () => {
     await launchApp();
     await screen.findByText('Henüz ürün eklemediniz');
     const firstUserId = backend.callsTo('GET /products')[0].query.get('userId');
-    expect(firstUserId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await AsyncStorage.getItem('deviceId')).toBe(firstUserId);
+    expect(firstUserId).toBe(backend.userId); // kimliği sunucu üretti
+    expect(JSON.parse((await SecureStore.getItemAsync('session'))!).userId).toBe(firstUserId);
 
     await screen.unmountAsync();
     backend.calls.length = 0;
@@ -48,13 +49,15 @@ describe('açılış', () => {
     await screen.findByText('Henüz ürün eklemediniz');
 
     expect(backend.callsTo('GET /products')[0].query.get('userId')).toBe(firstUserId);
+    expect(backend.registrations).toBe(1); // ikinci açılışta yeniden kayıt YOK
+    expect(backend.callsTo('GET /products')[0].headers.authorization).toBe(`Bearer ${tokenFor(firstUserId!)}`);
   });
 
   it('bildirim izni verilmişse token\'ı, Profil ekranına hiç girmeden, cihaz kimliğiyle backend\'e kaydeder', async () => {
     await launchApp();
 
     await waitFor(() => expect(backend.callsTo('POST /devices')).toHaveLength(1));
-    const deviceId = (await AsyncStorage.getItem('deviceId'))!;
+    const deviceId = JSON.parse((await SecureStore.getItemAsync('session'))!).userId;
     expect(backend.callsTo('POST /devices')[0].body).toEqual({
       userId: deviceId,
       expoPushToken: 'ExponentPushToken[test]',
@@ -85,11 +88,11 @@ describe('açılış', () => {
   });
 
   it('kalıcı depo okunamasa bile açılış ekranında takılmaz, uygulama açılır', async () => {
-    // Yalnızca cihaz kimliği okuması düşüyor (mock jest.fn: özgün gerçekleme sonunda geri konuyor)
-    const getItem = jest.mocked(AsyncStorage.getItem);
+    // Yalnızca oturum okuması düşüyor (mock jest.fn: özgün gerçekleme sonunda geri konuyor)
+    const getItem = jest.mocked(SecureStore.getItemAsync);
     const original = getItem.getMockImplementation()!;
     getItem.mockImplementation(async (key: string) => {
-      if (key === 'deviceId') throw new Error('disk hatası');
+      if (key === 'session') throw new Error('keychain hatası');
       return original(key);
     });
     try {
@@ -341,9 +344,34 @@ describe('ürün ekleme akışı (uçtan uca)', () => {
   });
 });
 
+describe('oturum', () => {
+  it('ilk açılışta sunucuya ulaşılamazsa "Tekrar Dene" gösterir; bağlantı gelince uygulama açılır', async () => {
+    backend.networkDown('POST /auth/register');
+    await launchApp();
+
+    expect(await screen.findByText('Bağlantı kurulamadı. İnternet bağlantını kontrol edip tekrar dene.')).toBeTruthy();
+    expect(backend.callsTo('GET /products')).toHaveLength(0);
+
+    await fireEventAsync.press(screen.getByTestId('session-retry-button'));
+
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(backend.registrations).toBe(1);
+  });
+
+  it('sunucu kayıtlı token’ı reddederse (401) oturum silinip yenisi alınır ve liste yeni kimlikle yüklenir', async () => {
+    await SecureStore.setItemAsync('session', JSON.stringify({ userId: 'eski', token: 'gecersiz-token' }));
+    await launchApp();
+
+    await waitFor(() => expect(backend.registrations).toBe(1));
+    expect(await screen.findByText('Henüz ürün eklemediniz')).toBeTruthy();
+    expect(JSON.parse((await SecureStore.getItemAsync('session'))!).userId).toBe(backend.userId);
+    expect(backend.callsTo('GET /products').at(-1)!.headers.authorization).toBe(`Bearer ${tokenFor(backend.userId)}`);
+  });
+});
+
 describe('ücretsiz limit → Premium → ekleme (uçtan uca)', () => {
   it('limit dolunca Premium\'a yönlendirir; premium olunca aynı kullanıcı yeni ürün ekleyebilir', async () => {
-    await AsyncStorage.setItem('deviceId', 'test-device');
+    await seedSession('test-device');
     backend = installFakeBackend({
       catalog: [resolvedProduct()],
       products: [1, 2, 3].map((i) =>
@@ -379,7 +407,7 @@ describe('ücretsiz limit → Premium → ekleme (uçtan uca)', () => {
 
 describe('sekmeler', () => {
   it('Ürünlerim ↔ Ayarlar arasında gidip gelir; veri korunur', async () => {
-    await AsyncStorage.setItem('deviceId', 'test-device');
+    await seedSession('test-device');
     backend = installFakeBackend({ products: [trackedProduct({ id: 1 })] });
     await launchApp();
     await waitFor(() => expect(cards()).toHaveLength(1));
@@ -393,7 +421,7 @@ describe('sekmeler', () => {
   });
 
   it('ürün detayındaki "kaydedilmemiş değişiklik" onayı, kökteki tek DialogHost üzerinden açılır', async () => {
-    await AsyncStorage.setItem('deviceId', 'test-device');
+    await seedSession('test-device');
     backend = installFakeBackend({ catalog: [resolvedProduct()], products: [trackedProduct({ id: 1, sku: 'beyaz:sku-s', size: 'S' })] });
     await launchApp();
     await waitFor(() => expect(cards()).toHaveLength(1));

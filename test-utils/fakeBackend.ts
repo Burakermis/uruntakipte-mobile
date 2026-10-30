@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '../src/api';
+import { API_BASE_URL, setAuthToken } from '../src/api';
 import { canNotifyOnBackInStock } from '../src/availability';
 import type { ResolvedProduct, TrackedProduct, UserLimits } from '../src/types';
 import { userLimits } from './fixtures';
@@ -14,6 +14,7 @@ export interface RecordedRequest {
   path: string; // "/products/12" (API_BASE_URL çıkarılmış, sorgu dizgesiz)
   query: URLSearchParams;
   body: any;
+  headers: Record<string, string>;
 }
 
 interface FakeResponse {
@@ -50,7 +51,12 @@ function apiError(status: number, error: string, message: string, extra: object 
   return respond(status, { error, message, ...extra });
 }
 
+/** Sahte backend'in tanıdığı token biçimi: `token-<userId>`. */
+export const tokenFor = (id: string) => `token-${id}`;
+
 export function createFakeBackend(options: FakeBackendOptions = {}) {
+  // Sunucu kimliği KENDİ üretir (POST /auth/register); testler sabit bir kimlik isteyebilir.
+  let registrations = 0;
   const userId = options.userId ?? 'test-device';
   let products: TrackedProduct[] = [...(options.products ?? [])];
   const catalog = new Map<string, ResolvedProduct>((options.catalog ?? []).map((p) => [p.canonicalUrl, p]));
@@ -80,6 +86,20 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
 
   function route(req: RecordedRequest): FakeResponse {
     const { method, path, body } = req;
+
+    if (method === 'POST' && path === '/auth/register') {
+      registrations += 1;
+      return respond(201, { userId, token: tokenFor(userId) });
+    }
+
+    // Gerçek backend gibi: kayıt dışında her uç geçerli bir Bearer token ister ve
+    // gövde/sorgu/yoldaki userId token'daki kimlikle aynı olmalı.
+    const bearer = /^Bearer token-(.+)$/.exec(req.headers.authorization ?? '');
+    if (!bearer) return apiError(401, 'UNAUTHORIZED', 'Oturum doğrulanamadı.');
+    const pathUser = /^\/users\/([^/]+)\//.exec(path)?.[1];
+    for (const supplied of [req.query.get('userId'), body?.userId, pathUser]) {
+      if (supplied != null && supplied !== bearer[1]) return apiError(403, 'FORBIDDEN', 'Bu kaynağa erişim iznin yok.');
+    }
 
     if (method === 'POST' && path === '/products/resolve') {
       const resolved = catalog.get(body.url);
@@ -151,7 +171,7 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
     if (method === 'POST' && /^\/users\/[^/]+\/(premium|sync-premium)$/.test(path)) {
       if (path.endsWith('/premium')) limitOverrides.isPremium = body.isPremium;
       else limitOverrides.isPremium = true; // sync: RevenueCat doğruladı varsayımı
-      return respond(200, { userId, isPremium: !!limitOverrides.isPremium });
+      return respond(200, { userId: path.split('/')[2], isPremium: !!limitOverrides.isPremium });
     }
 
     if (method === 'POST' && path === '/devices') return respond(200, {});
@@ -171,6 +191,7 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
       path: parsed.pathname.slice(basePath.length) || '/',
       query: parsed.searchParams,
       body: init.body ? JSON.parse(init.body as string) : undefined,
+      headers: Object.fromEntries(Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v])),
     };
     calls.push(req);
 
@@ -193,6 +214,9 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
 
   return {
     userId,
+    get registrations() {
+      return registrations;
+    },
     fetch: fetchImpl,
     calls,
     get products() {
@@ -249,5 +273,13 @@ export type FakeBackend = ReturnType<typeof createFakeBackend>;
 export function installFakeBackend(options?: FakeBackendOptions): FakeBackend {
   const backend = createFakeBackend(options);
   (global as any).fetch = backend.fetch;
+  // Ekran/servis testleri uygulama köküne uğramadan api'yi çağırır: oturumu açılmış gibi davran.
+  setAuthToken(tokenFor(backend.userId));
   return backend;
+}
+
+/** Önceden kayıtlı bir oturum (güvenli depoda) — "uygulama daha önce açılmış" durumu. */
+export async function seedSession(userId: string): Promise<void> {
+  const SecureStore = require('expo-secure-store');
+  await SecureStore.setItemAsync('session', JSON.stringify({ userId, token: tokenFor(userId) }));
 }

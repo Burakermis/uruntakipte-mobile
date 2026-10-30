@@ -66,14 +66,35 @@ const REQUEST_TIMEOUT_MS = 10000;
 // üst sınırından biraz daha geniş, ayrı bir zaman aşımı tanınıyor.
 const SCRAPE_TIMEOUT_MS = 35000;
 
-async function request<T>(path: string, options: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+// Oturum token'ı (bkz. utils/session.ts): kayıt dışındaki her istek `Authorization: Bearer` ile gider.
+let authToken: string | null = null;
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+}
+
+// Sunucu gönderdiğimiz token'ı reddederse (401) çağrılır; App yeni bir oturum alır.
+let unauthorizedHandler: (() => void) | null = null;
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  authenticated = true
+): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authenticated && authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        ...options.headers,
+      },
       signal: controller.signal,
     });
   } catch (err) {
@@ -100,6 +121,7 @@ async function request<T>(path: string, options: RequestInit = {}, timeoutMs = R
     );
   }
   if (!res.ok) {
+    if (res.status === 401 && authenticated && authToken) unauthorizedHandler?.();
     throw new ApiRequestError(data as ApiError, res.status);
   }
   return data as T;
@@ -115,6 +137,11 @@ function getJson<T>(path: string): Promise<T> {
 
 function deleteRequest(path: string): Promise<void> {
   return request<void>(path, { method: 'DELETE' });
+}
+
+// Yeni kimlik (userId + token) alır; kimlik sunucuda üretilir, istemci belirleyemez.
+export function registerSession(): Promise<{ userId: string; token: string }> {
+  return request('/auth/register', { method: 'POST', body: '{}' }, REQUEST_TIMEOUT_MS, false);
 }
 
 export function resolveProduct(url: string): Promise<ResolvedProduct> {
