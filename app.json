@@ -25,11 +25,6 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "extra": {
-      "eas": {
-        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
-      }
-    },
     "plugins": [
       [
         "expo-splash-screen",
@@ -43,7 +38,14 @@
           }
         }
       ],
-      "expo-font"
-    ]
+      "expo-font",
+      "expo-status-bar"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "9c00dd3b-3927-4c3e-8590-28b0e837977f"
+      }
+    },
+    "owner": "huseyinburakermis"
   }
 }
